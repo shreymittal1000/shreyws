@@ -1,0 +1,112 @@
+groups:
+  - name: shreyws-critical
+    rules:
+      - alert: HostDown
+        expr: up{job="node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS host metrics are down"
+          description: "Prometheus cannot scrape node-exporter."
+
+      - alert: PrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus self-scrape is down"
+          description: "Prometheus cannot scrape its own metrics endpoint."
+
+      - alert: TraefikDown
+        expr: up{job="traefik"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Traefik metrics are down"
+          description: "Prometheus cannot scrape Traefik metrics."
+
+      - alert: BackupFailed
+        expr: shreyws_backup_last_success == 0 or shreyws_backup_repository_check_success == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS backup did not complete successfully"
+          description: "The latest backup or repository check has not reported success."
+
+      - alert: BackupOlderThan48Hours
+        expr: shreyws_backup_age_seconds > 172800
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS backup is older than 48 hours"
+          description: "No successful Borg backup has completed in the last 48 hours."
+
+  - name: shreyws-warning
+    rules:
+      - alert: FilesystemUsageHigh
+        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|vfat|overlay"}) > 0.80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem usage is above 80%"
+          description: "Filesystem {{ $labels.mountpoint }} is above 80% used."
+
+      - alert: FilesystemAlmostFull
+        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|vfat|overlay"}) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem is almost full"
+          description: "Filesystem {{ $labels.mountpoint }} is above 90% used."
+
+      - alert: InodesLow
+        expr: (1 - node_filesystem_files_free{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_files{fstype!~"tmpfs|vfat|overlay"}) > 0.80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem inode usage is high"
+          description: "Filesystem {{ $labels.mountpoint }} inode usage is above 80%."
+
+      - alert: MemoryUsageHigh
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage is above 90%"
+          description: "Host memory pressure has been high for 15 minutes."
+
+      - alert: CpuUsageHigh
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.95
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage is above 95%"
+          description: "CPU usage has been above 95% for 15 minutes."
+
+      - alert: OomKillObserved
+        expr: increase(node_vmstat_oom_kill[15m]) > 0 or increase(container_oom_events_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OOM kill observed"
+          description: "The host or a container reported an OOM event."
+
+      - alert: ContainerRestartedRecently
+        expr: changes(container_start_time_seconds{name!=""}[30m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restarted repeatedly"
+          description: "Container {{ $labels.name }} restarted more than once in 30 minutes."

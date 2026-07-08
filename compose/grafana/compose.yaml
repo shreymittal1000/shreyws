@@ -7,6 +7,8 @@ services:
       - traefik_default
     volumes:
       - grafana_data:/var/lib/grafana
+      - /srv/shreyws/infra/compose/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /srv/shreyws/infra/compose/grafana/dashboards:/var/lib/grafana/dashboards:ro
     environment:
       - GF_SERVER_DOMAIN=shreyws.tail1591fa.ts.net
       - GF_SERVER_ROOT_URL=https://shreyws.tail1591fa.ts.net/grafana/

@@ -12,6 +12,9 @@ services:
 
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.metrics.address=:8082"
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.entrypoint=metrics"
 
     ports:
       - "80:80"
@@ -19,3 +22,10 @@ services:
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    networks:
+      - traefik_default
+
+networks:
+  traefik_default:
+    external: true

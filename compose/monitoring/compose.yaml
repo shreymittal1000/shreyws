@@ -7,6 +7,7 @@ services:
       - traefik_default
     volumes:
       - /srv/shreyws/infra/compose/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /srv/shreyws/infra/compose/monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - /srv/shreyws/services/prometheus:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -30,8 +31,23 @@ services:
       - traefik_default
     command:
       - "--path.rootfs=/host"
+      - "--collector.textfile.directory=/textfile"
     volumes:
       - /:/host:ro,rslave
+      - /srv/shreyws/services/node-exporter/textfile:/textfile:ro
+
+  backup-metrics:
+    image: alpine:3.20
+    container_name: shreyws-backup-metrics
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    command: ["/bin/sh", "/usr/local/bin/backup-metrics.sh"]
+    volumes:
+      - /srv/shreyws/infra/compose/monitoring/backup-metrics/backup-metrics.sh:/usr/local/bin/backup-metrics.sh:ro
+      - /var/log/shreyws-backup:/logs:ro
+      - /run:/host/run:ro
+      - /srv/shreyws/services/node-exporter/textfile:/textfile
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
