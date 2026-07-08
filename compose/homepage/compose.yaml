@@ -1,0 +1,31 @@
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: shreyws-homepage
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: shreyws.tail1591fa.ts.net
+    volumes:
+      - /srv/shreyws/infra/compose/homepage/config:/app/config
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_default
+      - traefik.http.routers.homepage.rule=Host(`shreyws.tail1591fa.ts.net`)
+      - traefik.http.routers.homepage.entrypoints=websecure
+      - traefik.http.routers.homepage.tls=true
+      - traefik.http.routers.homepage.priority=1
+      - traefik.http.services.homepage.loadbalancer.server.port=3000
+
+networks:
+  traefik_default:
+    external: true

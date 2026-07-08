@@ -1,0 +1,23 @@
+title: ShreyWS
+description: Homelab landing page
+theme: dark
+color: slate
+headerStyle: clean
+statusStyle: dot
+target: _self
+hideVersion: true
+disableUpdateCheck: true
+quicklaunch:
+  searchDescriptions: true
+  hideInternetSearch: true
+  hideVisitURL: false
+layout:
+  Infrastructure:
+    style: row
+    columns: 5
+  Operations:
+    style: row
+    columns: 3
+  Future Services:
+    style: row
+    columns: 5

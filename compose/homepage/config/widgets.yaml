@@ -1,0 +1,12 @@
+- logo:
+    icon: homepage.png
+- datetime:
+    text_size: sm
+    format:
+      dateStyle: medium
+      timeStyle: short
+- search:
+    provider: custom
+    url: https://duckduckgo.com/?q=
+    target: _blank
+    showSearchSuggestions: false
