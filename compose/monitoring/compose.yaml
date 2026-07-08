@@ -11,7 +11,7 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--web.external-url=http://shreyws.tail1591fa.ts.net/prometheus/"
+      - "--web.external-url=https://shreyws.tail1591fa.ts.net/prometheus/"
       - "--web.route-prefix=/prometheus"
     labels:
       - traefik.enable=true
