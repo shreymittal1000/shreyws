@@ -150,7 +150,9 @@
 - Future Services:
     - Authentik:
         icon: authentik.png
-        description: Placeholder for future identity provider
+        href: https://shreyws.tail1591fa.ts.net/authentik/
+        description: Identity provider and future SSO entrypoint
+        siteMonitor: http://shreyws-authentik-server:9000/authentik/-/health/live/
     - Forgejo:
         icon: forgejo.png
         description: Placeholder for future Git hosting

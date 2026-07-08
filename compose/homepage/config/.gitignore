@@ -1,3 +1,5 @@
 logs/
 kubernetes.yaml
 proxmox.yaml
+custom.css
+custom.js

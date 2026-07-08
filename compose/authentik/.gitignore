@@ -1,0 +1,5 @@
+.env
+data/
+certs/
+custom-templates/*
+!custom-templates/.gitkeep
