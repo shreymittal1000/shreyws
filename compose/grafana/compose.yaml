@@ -1,0 +1,27 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: shreyws-grafana
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SERVER_DOMAIN=shreyws.tail1591fa.ts.net
+      - GF_SERVER_ROOT_URL=https://shreyws.tail1591fa.ts.net/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_default
+      - traefik.http.routers.grafana.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/grafana`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls=true
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+
+volumes:
+  grafana_data:
+
+networks:
+  traefik_default:
+    external: true
