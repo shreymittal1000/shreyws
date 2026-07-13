@@ -62,6 +62,53 @@ services:
       - traefik.http.routers.authentik.tls=true
       - traefik.http.services.authentik.loadbalancer.server.port=9000
 
+  proxy:
+    image: ghcr.io/goauthentik/proxy:${AUTHENTIK_TAG:-2026.5.3}
+    container_name: shreyws-authentik-proxy
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      AUTHENTIK_HOST: https://shreyws.tail1591fa.ts.net/authentik/
+      AUTHENTIK_HOST_BROWSER: https://shreyws.tail1591fa.ts.net/authentik/
+      AUTHENTIK_INSECURE: "true"
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS}
+      POSTGRES_HOST: postgresql
+      POSTGRES_DB: ${PG_DB:-authentik}
+      POSTGRES_USER: ${PG_USER:-authentik}
+      POSTGRES_PASSWORD: ${PG_PASS}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q --spider http://127.0.0.1:9000/outpost.goauthentik.io/ping"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - authentik_internal
+      - traefik_default
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_default
+      # Authentik proxy outpost endpoint. This route must not be protected by itself.
+      - traefik.http.routers.authentik-outpost.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/outpost.goauthentik.io/`)
+      - traefik.http.routers.authentik-outpost.entrypoints=websecure
+      - traefik.http.routers.authentik-outpost.tls=true
+      - traefik.http.routers.authentik-outpost.priority=100
+      - traefik.http.routers.authentik-outpost.service=authentik-proxy
+      - traefik.http.services.authentik-proxy.loadbalancer.server.port=9000
+      # Shared forward-auth middleware for protected ShreyWS services.
+      - traefik.http.middlewares.authentik-forward-auth.forwardauth.address=http://shreyws-authentik-proxy:9000/outpost.goauthentik.io/auth/traefik
+      - traefik.http.middlewares.authentik-forward-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.authentik-forward-auth.forwardauth.authResponseHeaders=X-authentik-username,X-authentik-groups,X-authentik-entitlements,X-authentik-email,X-authentik-name,X-authentik-uid,X-authentik-jwt,X-authentik-meta-jwks,X-authentik-meta-outpost,X-authentik-meta-provider,X-authentik-meta-app,X-authentik-meta-version
+
   worker:
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.5.3}
     container_name: shreyws-authentik-worker

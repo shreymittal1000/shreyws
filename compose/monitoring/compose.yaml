@@ -67,16 +67,19 @@ services:
       - "traefik.http.routers.cadvisor-root.entrypoints=websecure"
       - "traefik.http.routers.cadvisor-root.tls=true"
       - "traefik.http.routers.cadvisor-root.service=cadvisor"
+      - "traefik.http.routers.cadvisor-root.middlewares=authentik-forward-auth@docker"
 
       - "traefik.http.routers.cadvisor-containers.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/containers`)"
       - "traefik.http.routers.cadvisor-containers.entrypoints=websecure"
       - "traefik.http.routers.cadvisor-containers.tls=true"
       - "traefik.http.routers.cadvisor-containers.service=cadvisor"
+      - "traefik.http.routers.cadvisor-containers.middlewares=authentik-forward-auth@docker"
 
       - "traefik.http.routers.cadvisor-static.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/static`)"
       - "traefik.http.routers.cadvisor-static.entrypoints=websecure"
       - "traefik.http.routers.cadvisor-static.tls=true"
       - "traefik.http.routers.cadvisor-static.service=cadvisor"
+      - "traefik.http.routers.cadvisor-static.middlewares=authentik-forward-auth@docker"
 
       - "traefik.http.services.cadvisor.loadbalancer.server.port=8080"
 
@@ -84,11 +87,13 @@ services:
       - "traefik.http.routers.cadvisor-docker.entrypoints=websecure"
       - "traefik.http.routers.cadvisor-docker.tls=true"
       - "traefik.http.routers.cadvisor-docker.service=cadvisor"
+      - "traefik.http.routers.cadvisor-docker.middlewares=authentik-forward-auth@docker"
 
       - "traefik.http.routers.cadvisor-podman.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/podman`)"
       - "traefik.http.routers.cadvisor-podman.entrypoints=websecure"
       - "traefik.http.routers.cadvisor-podman.tls=true"
       - "traefik.http.routers.cadvisor-podman.service=cadvisor"
+      - "traefik.http.routers.cadvisor-podman.middlewares=authentik-forward-auth@docker"
 
 networks:
   traefik_default:

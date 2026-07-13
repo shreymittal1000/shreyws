@@ -19,3 +19,6 @@ __pycache__/
 *.pyc
 .vscode/
 .DS_Store
+
+# Local timestamped safety backups created before config edits.
+*.bak.*
