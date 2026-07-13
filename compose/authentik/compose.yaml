@@ -72,7 +72,7 @@ services:
     env_file:
       - .env
     environment:
-      AUTHENTIK_HOST: https://shreyws.tail1591fa.ts.net/authentik/
+      AUTHENTIK_HOST: http://shreyws-authentik-server:9000/authentik/
       AUTHENTIK_HOST_BROWSER: https://shreyws.tail1591fa.ts.net/authentik/
       AUTHENTIK_INSECURE: "true"
       AUTHENTIK_POSTGRESQL__HOST: postgresql

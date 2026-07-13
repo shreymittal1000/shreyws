@@ -27,14 +27,24 @@ Authentik itself remains unprotected by forward-auth.
 - Proxy provider: `ShreyWS Forward Auth`
 - Provider mode: `forward_domain`
 - External host: `https://shreyws.tail1591fa.ts.net`
-- Outpost: `authentik Embedded Outpost`
+- Outpost: `ShreyWS Proxy Outpost`
 - Policy: any successfully authenticated Authentik user may access the protected services.
 
 ## Outpost Deployment
 
 The embedded outpost database object exists, but the Authentik server container did not serve `/outpost.goauthentik.io/auth/traefik`; it returned `404` even after provider assignment and an Authentik server restart.
 
-Because of that, ShreyWS uses the official Authentik proxy outpost sidecar:
+The first sidecar attempt reused the embedded outpost token. That made the proxy run in embedded mode and the callback failed after login because it tried to redeem the OAuth code through `/dev/shm/authentik.sock`, which is not present in the standalone sidecar container.
+
+Because of that, ShreyWS uses a dedicated non-embedded Authentik proxy outpost:
+
+```text
+ShreyWS Proxy Outpost
+```
+
+The provider `ShreyWS Forward Auth` is assigned to that standalone outpost, not to `authentik Embedded Outpost`.
+
+ShreyWS runs the official Authentik proxy outpost sidecar:
 
 ```text
 shreyws-authentik-proxy
@@ -46,7 +56,9 @@ The sidecar:
 - publishes no host ports;
 - joins `traefik_default` so Traefik can reach it;
 - joins `authentik_authentik_internal` so it can use PostgreSQL for proxy sessions;
-- stores its token in ignored `compose/authentik/.env` as `AUTHENTIK_TOKEN`.
+- stores the `ShreyWS Proxy Outpost` token in ignored `compose/authentik/.env` as `AUTHENTIK_TOKEN`;
+- uses `AUTHENTIK_HOST=http://shreyws-authentik-server:9000/authentik/` for Docker-internal API communication;
+- uses `AUTHENTIK_HOST_BROWSER=https://shreyws.tail1591fa.ts.net/authentik/` for browser-facing redirects.
 
 ## Traefik Middleware
 
@@ -130,10 +142,12 @@ Server-side verification completed:
 - Authentik worker healthy.
 - Authentik PostgreSQL healthy.
 - Authentik proxy sidecar healthy.
+- Authentik proxy sidecar reports `embedded=false`.
 - Authentik proxy outpost route returns `204` at `/outpost.goauthentik.io/ping`.
 - cAdvisor container healthy after label-only recreation.
 - Unauthenticated cAdvisor requests return `302` to the external Authentik login URL.
 - Redirect-following reaches the Authentik authentication flow without a redirect loop.
+- The previous callback error `dial unix /dev/shm/authentik.sock` no longer appears after switching to `ShreyWS Proxy Outpost`.
 - Homepage, Prometheus, Grafana, and Authentik still respond on their existing URLs.
 
 Not completed automatically:
@@ -166,7 +180,11 @@ Use a private/incognito browser window to avoid stale cookies.
    https://shreyws.tail1591fa.ts.net/docker
    ```
 
-5. Confirm cAdvisor loads normally.
+5. Confirm cAdvisor loads normally and the final URL is back under:
+
+   ```text
+   https://shreyws.tail1591fa.ts.net/docker
+   ```
 
 6. Click into at least one container page and confirm assets load.
 
