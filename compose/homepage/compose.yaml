@@ -33,6 +33,7 @@ services:
       - traefik.http.routers.homepage-path.priority=20
       - traefik.http.middlewares.homepage-strip-prefix.stripprefix.prefixes=/homepage
       - traefik.http.services.homepage.loadbalancer.server.port=3000
+      - diun.enable=true
 
 networks:
   traefik_default:

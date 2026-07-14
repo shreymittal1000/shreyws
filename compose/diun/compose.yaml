@@ -1,0 +1,26 @@
+services:
+  diun:
+    image: crazymax/diun:4.33.0
+    container_name: shreyws-diun
+    restart: unless-stopped
+    command: serve --config /diun.yml
+    environment:
+      TZ: Europe/Zurich
+      LOG_LEVEL: info
+      LOG_NOCOLOR: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /srv/shreyws/infra/compose/diun/diun.yml:/diun.yml:ro
+      - /srv/shreyws/infra/compose/diun/scripts:/scripts:ro
+      - /srv/shreyws/services/diun:/data
+    healthcheck:
+      test:
+        - CMD
+        - diun
+        - healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - diun.enable=true

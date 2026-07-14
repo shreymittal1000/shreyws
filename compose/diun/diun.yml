@@ -1,0 +1,11 @@
+watch:
+  workers: 5
+  schedule: "0 6 * * *"
+
+providers:
+  docker:
+    watchByDefault: false
+
+notif:
+  script:
+    cmd: /scripts/notify-log.sh

@@ -25,6 +25,8 @@ services:
 
     networks:
       - traefik_default
+    labels:
+      - diun.enable=true
 
 networks:
   traefik_default:

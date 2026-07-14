@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INFRA_ROOT="${SHREYWS_INFRA_ROOT:-/srv/shreyws/infra}"
+COMPOSE_ROOT="$INFRA_ROOT/compose"
+LOG_ROOT="$INFRA_ROOT/logs/container-updates"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  shreyws-container-update [--dry-run] [--yes] <compose-project-or-dir>
+  shreyws-container-update --compose-dir <path> [--dry-run] [--yes]
+  shreyws-container-update --rollback <state-dir>
+
+Examples:
+  shreyws-container-update grafana
+  shreyws-container-update --dry-run monitoring
+  shreyws-container-update --compose-dir /srv/shreyws/infra/compose/homepage
+  shreyws-container-update --rollback /srv/shreyws/infra/logs/container-updates/20260714-120000-grafana
+EOF
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+require_docker_access() {
+  if ! docker info >/dev/null 2>&1; then
+    die "Docker is not accessible. Run as root or as a user with Docker permissions."
+  fi
+}
+
+project_from_dir() {
+  basename "$1"
+}
+
+resolve_compose_dir() {
+  local arg="$1"
+
+  if [ -d "$arg" ]; then
+    realpath "$arg"
+    return
+  fi
+
+  if [ -d "$COMPOSE_ROOT/$arg" ]; then
+    realpath "$COMPOSE_ROOT/$arg"
+    return
+  fi
+
+  die "Compose project or directory not found: $arg"
+}
+
+require_compose_file() {
+  local dir="$1"
+  [ -f "$dir/compose.yaml" ] || die "No compose.yaml found in $dir"
+}
+
+container_state() {
+  local output="$1"
+  shift
+
+  : > "$output"
+  printf 'service\tcontainer\tconfig_image\timage_id\trepo_digest\n' >> "$output"
+
+  local cid service container config_image image_id repo_digest
+  for cid in "$@"; do
+    service="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$cid")"
+    container="$(docker inspect --format '{{ .Name }}' "$cid" | sed 's#^/##')"
+    config_image="$(docker inspect --format '{{ .Config.Image }}' "$cid")"
+    image_id="$(docker inspect --format '{{ .Image }}' "$cid")"
+    repo_digest="$(docker image inspect "$image_id" --format '{{ range .RepoDigests }}{{ println . }}{{ end }}' | head -n 1 || true)"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$service" "$container" "$config_image" "$image_id" "${repo_digest:-}" >> "$output"
+  done
+}
+
+write_rollback_override() {
+  local state_file="$1"
+  local output="$2"
+
+  {
+    echo "services:"
+    tail -n +2 "$state_file" | while IFS="$(printf '\t')" read -r service _container config_image image_id repo_digest; do
+      if [ -n "${repo_digest:-}" ]; then
+        echo "  $service:"
+        echo "    image: $repo_digest"
+      else
+        echo "  # $service had no repo digest recorded. Previous config image was $config_image and image ID was $image_id."
+      fi
+    done
+  } > "$output"
+}
+
+show_current_images() {
+  echo "Current Compose container state:"
+  docker compose ps
+}
+
+show_changed_images() {
+  local before="$1"
+
+  echo
+  echo "Pulled image comparison:"
+  printf '%-22s %-46s %-14s\n' "SERVICE" "IMAGE" "LOCAL_TAG_CHANGED"
+
+  tail -n +2 "$before" | while IFS="$(printf '\t')" read -r service _container config_image image_id _repo_digest; do
+    local current_id changed
+    current_id="$(docker image inspect "$config_image" --format '{{ .Id }}' 2>/dev/null || true)"
+    changed="unknown"
+    if [ -n "$current_id" ]; then
+      if [ "$current_id" = "$image_id" ]; then
+        changed="no"
+      else
+        changed="yes"
+      fi
+    fi
+    printf '%-22s %-46s %-14s\n' "$service" "$config_image" "$changed"
+  done
+}
+
+verify_after_up() {
+  local state_dir="$1"
+  echo
+  echo "Container state after update:"
+  docker compose ps
+
+  local bad=0
+  local cid name status health restart_count
+  for cid in $(docker compose ps -q); do
+    name="$(docker inspect --format '{{ .Name }}' "$cid" | sed 's#^/##')"
+    status="$(docker inspect --format '{{ .State.Status }}' "$cid")"
+    health="$(docker inspect --format '{{ if .State.Health }}{{ .State.Health.Status }}{{ else }}none{{ end }}' "$cid")"
+    restart_count="$(docker inspect --format '{{ .RestartCount }}' "$cid")"
+    printf '%s status=%s health=%s restarts=%s\n' "$name" "$status" "$health" "$restart_count" | tee -a "$state_dir/verification.log"
+
+    if [ "$status" != "running" ] || [ "$health" = "unhealthy" ]; then
+      bad=1
+      echo "Recent logs for $name:" | tee -a "$state_dir/verification.log"
+      docker logs --tail=100 "$cid" 2>&1 | tee -a "$state_dir/verification.log"
+    fi
+  done
+
+  return "$bad"
+}
+
+rollback() {
+  local state_dir="$1"
+  [ -d "$state_dir" ] || die "Rollback state directory not found: $state_dir"
+  [ -f "$state_dir/compose-dir" ] || die "Missing compose-dir metadata in $state_dir"
+  [ -f "$state_dir/rollback-compose.override.yaml" ] || die "Missing rollback override in $state_dir"
+
+  local compose_dir
+  compose_dir="$(cat "$state_dir/compose-dir")"
+  require_compose_file "$compose_dir"
+
+  echo "Rollback target: $compose_dir"
+  echo "Rollback override: $state_dir/rollback-compose.override.yaml"
+  cd "$compose_dir"
+  docker compose -f compose.yaml -f "$state_dir/rollback-compose.override.yaml" up -d
+  verify_after_up "$state_dir"
+}
+
+main() {
+  local dry_run=0
+  local assume_yes=0
+  local compose_arg=""
+  local rollback_dir=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --yes|-y)
+        assume_yes=1
+        shift
+        ;;
+      --compose-dir)
+        [ "$#" -ge 2 ] || die "--compose-dir requires a path"
+        compose_arg="$2"
+        shift 2
+        ;;
+      --rollback)
+        [ "$#" -ge 2 ] || die "--rollback requires a state directory"
+        rollback_dir="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      -*)
+        die "Unknown option: $1"
+        ;;
+      *)
+        [ -z "$compose_arg" ] || die "Only one compose project or directory may be provided"
+        compose_arg="$1"
+        shift
+        ;;
+    esac
+  done
+
+  require_docker_access
+
+  if [ -n "$rollback_dir" ]; then
+    rollback "$rollback_dir"
+    exit $?
+  fi
+
+  [ -n "$compose_arg" ] || {
+    usage
+    exit 2
+  }
+
+  local compose_dir project timestamp state_dir containers
+  compose_dir="$(resolve_compose_dir "$compose_arg")"
+  require_compose_file "$compose_dir"
+  project="$(project_from_dir "$compose_dir")"
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  state_dir="$LOG_ROOT/$timestamp-$project"
+  mkdir -p "$state_dir"
+  printf '%s\n' "$compose_dir" > "$state_dir/compose-dir"
+
+  echo "Compose project: $project"
+  echo "Compose directory: $compose_dir"
+  echo "State directory: $state_dir"
+
+  cd "$compose_dir"
+  docker compose config --quiet
+
+  mapfile -t containers < <(docker compose ps -q)
+  [ "${#containers[@]}" -gt 0 ] || die "No running containers found for $compose_dir"
+
+  show_current_images | tee "$state_dir/current-images.txt"
+  container_state "$state_dir/images-before.tsv" "${containers[@]}"
+  echo
+  echo "Current running image state:"
+  cat "$state_dir/images-before.tsv"
+  write_rollback_override "$state_dir/images-before.tsv" "$state_dir/rollback-compose.override.yaml"
+
+  if [ "$dry_run" -eq 1 ]; then
+    echo
+    echo "Dry run complete. No images were pulled and no containers were recreated."
+    echo "Rollback metadata was recorded at $state_dir for inspection only."
+    exit 0
+  fi
+
+  echo
+  echo "Pulling images for selected project only..."
+  docker compose pull | tee "$state_dir/pull.log"
+
+  show_changed_images "$state_dir/images-before.tsv" | tee "$state_dir/pulled-image-comparison.txt"
+
+  if [ "$assume_yes" -ne 1 ]; then
+    echo
+    read -r -p "Recreate containers for project '$project' with pulled images? Type 'yes' to continue: " answer
+    [ "$answer" = "yes" ] || die "Update cancelled before container recreation."
+  fi
+
+  echo
+  echo "Recreating containers for selected project only..."
+  docker compose up -d | tee "$state_dir/up.log"
+  verify_after_up "$state_dir"
+
+  echo
+  echo "Update complete. Rollback metadata: $state_dir"
+  echo "Rollback command:"
+  echo "  $0 --rollback $state_dir"
+}
+
+main "$@"

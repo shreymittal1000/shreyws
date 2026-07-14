@@ -51,6 +51,11 @@ Server layout:
 * Prometheus
 * Node Exporter
 * cAdvisor
+* Traefik
+* Authentik
+* Homepage
+* BorgBackup
+* Container update notifications
 
 ---
 
@@ -90,6 +95,16 @@ Example:
 cd compose/<service>
 docker compose up -d
 ```
+
+Operational documentation:
+
+* [Monitoring](docs/monitoring.md)
+* [Alerts](docs/alerts.md)
+* [Backups and restore](docs/backup-restore.md)
+* [Authentik](docs/authentik.md)
+* [Authentik forward-auth](docs/authentik-forward-auth.md)
+* [Homepage](docs/homepage.md)
+* [Container update management](docs/container-update-management.md)
 
 ---
 

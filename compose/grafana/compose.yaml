@@ -21,6 +21,7 @@ services:
       - traefik.http.routers.grafana.tls=true
       - traefik.http.routers.grafana.middlewares=authentik-forward-auth@docker
       - traefik.http.services.grafana.loadbalancer.server.port=3000
+      - diun.enable=true
 
 volumes:
   grafana_data:

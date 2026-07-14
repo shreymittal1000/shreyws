@@ -22,6 +22,7 @@ services:
       - traefik.http.routers.prometheus.entrypoints=websecure
       - traefik.http.routers.prometheus.middlewares=authentik-forward-auth@docker
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
+      - diun.enable=true
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -36,6 +37,8 @@ services:
     volumes:
       - /:/host:ro,rslave
       - /srv/shreyws/services/node-exporter/textfile:/textfile:ro
+    labels:
+      - diun.enable=true
 
   backup-metrics:
     image: alpine:3.20
@@ -49,6 +52,8 @@ services:
       - /var/log/shreyws-backup:/logs:ro
       - /run:/host/run:ro
       - /srv/shreyws/services/node-exporter/textfile:/textfile
+    labels:
+      - diun.enable=true
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
@@ -95,6 +100,7 @@ services:
       - "traefik.http.routers.cadvisor-podman.tls=true"
       - "traefik.http.routers.cadvisor-podman.service=cadvisor"
       - "traefik.http.routers.cadvisor-podman.middlewares=authentik-forward-auth@docker"
+      - "diun.enable=true"
 
 networks:
   traefik_default:

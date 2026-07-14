@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+classify_image() {
+  local image="$1"
+  local ref="${image##*/}"
+  local tag=""
+
+  if [[ "$image" == *"@"sha256:* ]]; then
+    echo "digest-pinned"
+    return
+  fi
+
+  if [[ "$ref" == *:* ]]; then
+    tag="${ref##*:}"
+  else
+    tag="latest"
+  fi
+
+  case "$tag" in
+    latest)
+      echo "latest / unbounded"
+      ;;
+    *-latest|dev|edge|main|master|nightly)
+      echo "latest or otherwise unbounded"
+      ;;
+    v[0-9]|[0-9])
+      echo "major-version floating"
+      ;;
+    v[0-9].*|[0-9].*)
+      if [[ "$tag" =~ ^v?[0-9]+\.[0-9]+$ ]]; then
+        echo "minor-version floating"
+      else
+        echo "fixed version"
+      fi
+      ;;
+    [0-9]-*|[0-9][0-9]-*)
+      echo "major-version floating"
+      ;;
+    *)
+      echo "fixed version"
+      ;;
+  esac
+}
+
+remote_digest() {
+  local image="$1"
+  docker buildx imagetools inspect "$image" --format '{{ .Manifest.Digest }}' 2>/dev/null || true
+}
+
+current_digest() {
+  local image_id="$1"
+  docker image inspect "$image_id" --format '{{ range .RepoDigests }}{{ println . }}{{ end }}' 2>/dev/null | head -n 1 | sed 's/^.*@//' || true
+}
+
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "compose_project" "service" "container" "image" "pinning" "current_digest" "remote_digest" "newer_exists"
+
+for cid in $(docker ps -q); do
+  enabled="$(docker inspect --format '{{ index .Config.Labels "diun.enable" }}' "$cid" 2>/dev/null || true)"
+  [ "$enabled" = "true" ] || continue
+
+  project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$cid" 2>/dev/null || true)"
+  service="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$cid" 2>/dev/null || true)"
+  container="$(docker inspect --format '{{ .Name }}' "$cid" | sed 's#^/##')"
+  image="$(docker inspect --format '{{ .Config.Image }}' "$cid")"
+  image_id="$(docker inspect --format '{{ .Image }}' "$cid")"
+  pinning="$(classify_image "$image")"
+  current="$(current_digest "$image_id")"
+  remote="$(remote_digest "$image")"
+  newer="unknown"
+
+  if [ -n "$current" ] && [ -n "$remote" ]; then
+    if [ "$current" = "$remote" ]; then
+      newer="no"
+    else
+      newer="yes"
+    fi
+  fi
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${project:-unknown}" "${service:-unknown}" "$container" "$image" "$pinning" "${current:-unknown}" "${remote:-unknown}" "$newer"
+done | sort
