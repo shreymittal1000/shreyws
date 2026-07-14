@@ -2,9 +2,14 @@
 
 ## Status
 
-Forward authentication is configured for cAdvisor only.
+Forward authentication is configured for:
 
-Prometheus, Grafana, and Homepage are intentionally not protected yet because the cAdvisor browser login and return flow still needs to be verified interactively with a real Authentik user session.
+- cAdvisor
+- Prometheus
+- Grafana
+- Homepage
+
+Authentik itself and the proxy outpost callback paths are intentionally not protected by forward-auth.
 
 ## Architecture
 
@@ -103,24 +108,38 @@ Currently protected:
 
 - cAdvisor:
   - `/cadvisor`
+  - `/cadvisor/`
   - `/docker`
   - `/containers`
   - `/static`
   - `/podman`
-
-Not yet protected:
-
 - Prometheus
+  - `/prometheus/`
 - Grafana
+  - `/grafana/`
 - Homepage
+  - `/`
+  - `/homepage/`
+
+Homepage is still configured as a root-based application. The `homepage` router protects the existing host root route, and the `homepage-path` router protects `/homepage` as a compatibility URL. The `/homepage` router applies forward-auth first and then strips `/homepage` before sending the request to the Homepage container.
+
+Not protected:
+
+- Authentik:
+  - `/authentik/`
+- Authentik proxy outpost:
+  - `/outpost.goauthentik.io/`
 
 ## Configuration Locations
 
 Tracked files:
 
 - `compose/authentik/compose.yaml`
+- `compose/homepage/compose.yaml`
+- `compose/grafana/compose.yaml`
 - `compose/monitoring/compose.yaml`
 - `docs/authentik-forward-auth.md`
+- `docs/change-logs/`
 
 Ignored secret/runtime files:
 
@@ -133,6 +152,45 @@ Backups created:
 - `compose/authentik/compose.yaml.bak.20260713-153543`
 - `compose/authentik/.env.bak.*`
 - `compose/monitoring/compose.yaml.bak.20260713-174441`
+- `compose/homepage/compose.yaml.bak-*`
+- `compose/grafana/compose.yaml.bak-*`
+- `compose/monitoring/compose.yaml.bak-*`
+
+## Middleware Ordering
+
+Most protected routers use only:
+
+```text
+authentik-forward-auth@docker
+```
+
+Homepage's `/homepage` compatibility router uses:
+
+```text
+authentik-forward-auth@docker,homepage-strip-prefix
+```
+
+Forward-auth runs first so Authentik sees and preserves the original browser URL. The strip-prefix middleware runs only after the user is allowed through, so the root-based Homepage container receives a path it can serve.
+
+## Internal Integrations
+
+Prometheus scrapes internal Docker service names and does not use the authenticated public URL.
+
+Grafana's Prometheus datasource uses:
+
+```text
+http://prometheus:9090/prometheus
+```
+
+Homepage widgets and site monitors use internal Docker service URLs such as:
+
+```text
+http://prometheus:9090/prometheus
+http://grafana:3000/grafana/login
+http://cadvisor:8080/containers/
+```
+
+These internal paths avoid sending service-to-service monitoring traffic through interactive browser SSO.
 
 ## Verification Performed
 
@@ -144,29 +202,35 @@ Server-side verification completed:
 - Authentik proxy sidecar healthy.
 - Authentik proxy sidecar reports `embedded=false`.
 - Authentik proxy outpost route returns `204` at `/outpost.goauthentik.io/ping`.
-- cAdvisor container healthy after label-only recreation.
-- Unauthenticated cAdvisor requests return `302` to the external Authentik login URL.
+- cAdvisor container healthy.
+- Homepage container healthy after label-only recreation.
+- Grafana and Prometheus containers running after label-only recreation.
+- Unauthenticated cAdvisor, Homepage, Grafana, and Prometheus requests return `302` to the external Authentik login URL.
 - Redirect-following reaches the Authentik authentication flow without a redirect loop.
 - The previous callback error `dial unix /dev/shm/authentik.sock` no longer appears after switching to `ShreyWS Proxy Outpost`.
-- Homepage, Prometheus, Grafana, and Authentik still respond on their existing URLs.
+- Authentik and the proxy outpost remain reachable without forward-auth loops.
+- Homepage, Prometheus, Grafana, and cAdvisor backend paths respond internally.
 
 Not completed automatically:
 
-- Browser login with `akadmin`.
-- Return from Authentik to cAdvisor after login.
-- cAdvisor page and asset loading after authenticated session establishment.
+- Browser login with an existing Authentik user for each protected service.
+- Return from Authentik to each protected service after login.
+- Page and asset loading after authenticated session establishment.
 
 ## Manual Browser Validation
 
 Use a private/incognito browser window to avoid stale cookies.
 
-1. Open:
+1. Open each URL in a private/incognito browser window:
 
    ```text
-   https://shreyws.tail1591fa.ts.net/docker
+   https://shreyws.tail1591fa.ts.net/homepage/
+   https://shreyws.tail1591fa.ts.net/grafana/
+   https://shreyws.tail1591fa.ts.net/prometheus/
+   https://shreyws.tail1591fa.ts.net/docker/
    ```
 
-2. Confirm the browser redirects to:
+2. Confirm each one redirects to:
 
    ```text
    https://shreyws.tail1591fa.ts.net/authentik/
@@ -174,30 +238,11 @@ Use a private/incognito browser window to avoid stale cookies.
 
 3. Log in with an existing Authentik user, currently expected to be `akadmin`.
 
-4. Confirm the browser returns to:
+4. Confirm the browser returns to the originally requested URL.
 
-   ```text
-   https://shreyws.tail1591fa.ts.net/docker
-   ```
+5. Confirm the page, assets, links, and refresh behavior work for each service.
 
-5. Confirm cAdvisor loads normally and the final URL is back under:
-
-   ```text
-   https://shreyws.tail1591fa.ts.net/docker
-   ```
-
-6. Click into at least one container page and confirm assets load.
-
-7. Open:
-
-   ```text
-   https://shreyws.tail1591fa.ts.net/containers
-   https://shreyws.tail1591fa.ts.net/cadvisor
-   ```
-
-8. Confirm both are accessible without another login prompt in the same browser session.
-
-Do not protect Prometheus, Grafana, or Homepage until this succeeds.
+6. Confirm Authentik remains directly reachable at `/authentik/` and the outpost ping remains `204`.
 
 ## Add Another Protected Service
 
@@ -218,30 +263,44 @@ Do not protect Prometheus, Grafana, or Homepage until this succeeds.
 5. Verify browser login and return.
 6. Verify service assets and internal links.
 
-## Temporarily Disable Authentication for cAdvisor
+## Temporarily Disable Authentication for One Service
 
-Restore the monitoring Compose backup and recreate only cAdvisor:
+Restore that service's Compose backup and recreate only the affected container.
+
+Homepage:
+
+```bash
+cd /srv/shreyws/infra/compose/homepage
+cp -a compose.yaml.bak-YYYYMMDD-HHMMSS compose.yaml
+docker compose up -d --no-deps homepage
+```
+
+Grafana:
+
+```bash
+cd /srv/shreyws/infra/compose/grafana
+cp -a compose.yaml.bak-YYYYMMDD-HHMMSS compose.yaml
+docker compose up -d --no-deps grafana
+```
+
+Prometheus:
 
 ```bash
 cd /srv/shreyws/infra/compose/monitoring
-cp -a compose.yaml.bak.20260713-174441 compose.yaml
-docker compose up -d --no-deps cadvisor
+cp -a compose.yaml.bak-YYYYMMDD-HHMMSS compose.yaml
+docker compose up -d --no-deps prometheus
 ```
 
 This leaves Authentik and the proxy sidecar intact.
 
 ## Full Rollback
 
-Restore Authentik and monitoring Compose backups:
+Restore Authentik and monitoring Compose backups only if you want to remove the forward-auth infrastructure itself:
 
 ```bash
 cd /srv/shreyws/infra/compose/authentik
 cp -a compose.yaml.bak.20260713-153543 compose.yaml
 docker compose up -d --remove-orphans
-
-cd /srv/shreyws/infra/compose/monitoring
-cp -a compose.yaml.bak.20260713-174441 compose.yaml
-docker compose up -d --no-deps cadvisor
 ```
 
 Remove the Authentik objects if you want to fully undo the Authentik-side configuration:
@@ -267,7 +326,7 @@ Do not delete Authentik volumes or PostgreSQL data.
 
 ## Known Limitations
 
-- cAdvisor is the only protected service so far.
-- Full browser login and return-to-service validation is pending.
+- Full browser login and return-to-service validation must be confirmed interactively with an Authentik user session.
 - Authentik is still path-prefixed at `/authentik/`; do not change service base paths as part of forward-auth rollout.
 - Traefik still uses the existing self-signed/default certificate; this task intentionally did not modify TLS certificates.
+- If `shreyws-authentik-proxy` is stopped, protected routers depend on middleware defined by that container and may fail closed until the proxy is healthy again.

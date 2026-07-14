@@ -23,7 +23,15 @@ services:
       - traefik.http.routers.homepage.rule=Host(`shreyws.tail1591fa.ts.net`)
       - traefik.http.routers.homepage.entrypoints=websecure
       - traefik.http.routers.homepage.tls=true
+      - traefik.http.routers.homepage.middlewares=authentik-forward-auth@docker
       - traefik.http.routers.homepage.priority=1
+      - traefik.http.routers.homepage-path.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/homepage`)
+      - traefik.http.routers.homepage-path.entrypoints=websecure
+      - traefik.http.routers.homepage-path.tls=true
+      - traefik.http.routers.homepage-path.service=homepage
+      - traefik.http.routers.homepage-path.middlewares=authentik-forward-auth@docker,homepage-strip-prefix
+      - traefik.http.routers.homepage-path.priority=20
+      - traefik.http.middlewares.homepage-strip-prefix.stripprefix.prefixes=/homepage
       - traefik.http.services.homepage.loadbalancer.server.port=3000
 
 networks:
