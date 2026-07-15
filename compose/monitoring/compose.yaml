@@ -1,6 +1,6 @@
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.0
     container_name: shreyws-prometheus
     restart: unless-stopped
     networks:
@@ -25,7 +25,7 @@ services:
       - diun.enable=true
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.11.1
     container_name: shreyws-node-exporter
     restart: unless-stopped
     pid: host

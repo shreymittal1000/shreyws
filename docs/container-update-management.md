@@ -85,8 +85,8 @@ Current image classifications:
 | diun | diun | `crazymax/diun:4.33.0` | fixed version |
 | grafana | grafana | `grafana/grafana:latest` | latest / unbounded |
 | homepage | homepage | `ghcr.io/gethomepage/homepage:latest` | latest / unbounded |
-| monitoring | prometheus | `prom/prometheus:latest` | latest / unbounded |
-| monitoring | node-exporter | `prom/node-exporter:latest` | latest / unbounded |
+| monitoring | prometheus | `prom/prometheus:v3.13.0` | fixed version |
+| monitoring | node-exporter | `prom/node-exporter:v1.11.1` | fixed version |
 | monitoring | backup-metrics | `alpine:3.20` | minor-version floating |
 | monitoring | cadvisor | `gcr.io/cadvisor/cadvisor:latest` | latest / unbounded |
 | traefik | traefik | `traefik:v3.6.1` | fixed version |
@@ -94,12 +94,12 @@ Current image classifications:
 Recommended future pinning:
 
 - Pin Grafana to a tested major/minor version before applying future updates.
-- Pin Prometheus and Node Exporter to known-good versions.
+- Prometheus and Node Exporter are pinned to the versions that were already running when update management was introduced.
 - Pin cAdvisor to a known-good release if the `latest` tag becomes noisy or unstable.
 - Keep Authentik fixed-version pinned and upgrade it deliberately because it is now part of the authentication path.
 - Keep Traefik fixed-version pinned and upgrade deliberately because it is the HTTPS entrypoint.
 
-No broad pinning rewrite was done in this task. The only new image, Diun, is fixed-version pinned at `4.33.0`.
+No broad pinning rewrite was done. Diun, Prometheus, and Node Exporter are fixed-version pinned; the remaining `latest` references are documented above as future pinning candidates.
 
 ## Manual Update Check
 
