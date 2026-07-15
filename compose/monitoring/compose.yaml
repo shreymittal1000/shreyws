@@ -77,6 +77,31 @@ services:
     labels:
       - diun.enable=true
 
+  telegram-alert-webhook:
+    image: python:3.13.5-alpine3.22
+    container_name: shreyws-telegram-alert-webhook
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    command: ["python", "/app/telegram-alert-webhook.py"]
+    volumes:
+      - /srv/shreyws/infra/compose/monitoring/telegram-webhook/telegram-alert-webhook.py:/app/telegram-alert-webhook.py:ro
+      - /srv/shreyws/infra/compose/monitoring/telegram-webhook/get-telegram-chat-id.py:/app/get-telegram-chat-id.py:ro
+      - /srv/shreyws/secrets/alertmanager/telegram.env:/run/secrets/telegram.env:ro
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8081/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - diun.enable=true
+
   node-exporter:
     image: prom/node-exporter:v1.11.1
     container_name: shreyws-node-exporter

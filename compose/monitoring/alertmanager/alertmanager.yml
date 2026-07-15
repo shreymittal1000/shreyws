@@ -7,6 +7,14 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 12h
+  routes:
+    - receiver: local-alert-log
+      matchers:
+        - alertname=~".+"
+      continue: true
+    - receiver: telegram-alerts
+      matchers:
+        - alertname=~".+"
 
 inhibit_rules:
   - source_matchers:
@@ -24,4 +32,8 @@ receivers:
   - name: local-alert-log
     webhook_configs:
       - url: http://alert-log-webhook:8080/alert
+        send_resolved: true
+  - name: telegram-alerts
+    webhook_configs:
+      - url: http://telegram-alert-webhook:8081/alert
         send_resolved: true

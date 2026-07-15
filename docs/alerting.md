@@ -12,6 +12,7 @@ Prometheus
   -> sends firing/resolved alerts to Alertmanager
   -> Alertmanager groups, deduplicates and inhibits alerts
   -> local webhook writes JSON lines to disk
+  -> Telegram webhook sends concise Telegram messages when enabled
 ```
 
 Alertmanager and the alert-log webhook are internal-only Docker Compose services in:
@@ -27,6 +28,8 @@ Local alert log:
 ```text
 /srv/shreyws/logs/alertmanager/alerts.jsonl
 ```
+
+Telegram delivery is optional and uses a separate internal webhook service. The local JSONL log remains enabled as the audit trail and fallback even when Telegram is configured.
 
 View recent notifications:
 
@@ -48,7 +51,13 @@ Alert log webhook:
 python:3.13.5-alpine3.22
 ```
 
-Both use fixed image tags.
+Telegram alert webhook:
+
+```text
+python:3.13.5-alpine3.22
+```
+
+All alerting services use fixed image tags.
 
 ## Rule Files
 
@@ -68,6 +77,18 @@ Alertmanager configuration:
 
 ```text
 /srv/shreyws/infra/compose/monitoring/alertmanager/alertmanager.yml
+```
+
+Telegram webhook implementation:
+
+```text
+/srv/shreyws/infra/compose/monitoring/telegram-webhook/telegram-alert-webhook.py
+```
+
+Telegram chat ID helper:
+
+```text
+/srv/shreyws/infra/compose/monitoring/telegram-webhook/get-telegram-chat-id.py
 ```
 
 ## Thresholds
@@ -132,6 +153,21 @@ Inhibition:
 - Critical filesystem alerts suppress matching warning filesystem alerts for the same mount point.
 - Host metrics missing can suppress lower-severity dependent alerts where the `instance` label matches.
 
+Alertmanager sends each alert group to two independent webhook receivers:
+
+- `local-alert-log`
+- `telegram-alerts`
+
+The local JSONL receiver remains independent, so a Telegram API failure does not prevent local alert logging.
+
+The Telegram secret file is mounted read-only into the container at:
+
+```text
+/run/secrets/telegram.env
+```
+
+The service reads credentials from that file instead of Docker Compose `env_file`, so rendered Compose output and Docker labels do not contain the bot token or chat ID.
+
 ## Backup Metrics
 
 Backup status is exported by the existing `backup-metrics` container through Node Exporter's textfile collector.
@@ -190,6 +226,111 @@ Local notification log:
 tail -n 50 /srv/shreyws/logs/alertmanager/alerts.jsonl
 ```
 
+Telegram webhook health:
+
+```bash
+docker exec shreyws-telegram-alert-webhook wget -q -O - http://127.0.0.1:8081/health
+```
+
+Telegram webhook logs:
+
+```bash
+docker logs --tail=100 shreyws-telegram-alert-webhook
+```
+
+The health endpoint reports `telegram=disabled` until valid credentials are configured and `TELEGRAM_ENABLED=true` is set.
+
+## Telegram Notifications
+
+Telegram delivery is optional. It is disabled by default and requires a runtime secret file outside Git:
+
+```text
+/srv/shreyws/secrets/alertmanager/telegram.env
+```
+
+Recommended permissions:
+
+```bash
+sudo install -d -m 700 /srv/shreyws/secrets/alertmanager
+sudo install -m 600 /dev/null /srv/shreyws/secrets/alertmanager/telegram.env
+```
+
+Template:
+
+```text
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_CHAT_ID=<chat id>
+```
+
+The committed example file is:
+
+```text
+compose/monitoring/telegram-webhook/telegram.env.example
+```
+
+Do not put real Telegram credentials in the repository.
+
+The Telegram webhook container currently runs without a custom non-root UID so it can read the restrictive `0600` host secret file. It has no Docker socket, no host ports, no devices, and no Traefik route.
+
+### Bot Setup
+
+1. Open Telegram and start a chat with the official `BotFather` account.
+2. Create a bot with `/newbot`.
+3. Copy the bot token.
+4. Start a private conversation with the bot, or add the bot to a private group.
+5. Send at least one message to the bot or group so Telegram creates an update.
+6. Store the token in `/srv/shreyws/secrets/alertmanager/telegram.env`.
+7. Determine the chat ID with the helper:
+
+   ```bash
+   cd /srv/shreyws/infra/compose/monitoring
+   docker compose run --rm telegram-alert-webhook python /app/get-telegram-chat-id.py
+   ```
+
+   Private chat IDs are usually positive numbers. Group chat IDs are usually negative numbers.
+
+8. Add `TELEGRAM_CHAT_ID` to the secret file.
+9. Restart only the Telegram webhook and Alertmanager:
+
+   ```bash
+   cd /srv/shreyws/infra/compose/monitoring
+   docker compose up -d --no-deps telegram-alert-webhook alertmanager
+   ```
+
+### Message Format
+
+Telegram messages are plain text for reliability. Each message includes:
+
+- firing or resolved status
+- alert name
+- severity
+- summary
+- description when present
+- affected service or instance
+- start time
+- resolved time when present
+- number of grouped alerts
+
+Messages are truncated before Telegram's maximum message length.
+
+### Disable Telegram
+
+Set:
+
+```text
+TELEGRAM_ENABLED=false
+```
+
+Then recreate only the Telegram webhook:
+
+```bash
+cd /srv/shreyws/infra/compose/monitoring
+docker compose up -d --no-deps telegram-alert-webhook
+```
+
+The webhook remains healthy and returns success to Alertmanager while disabled, so local alert logging continues without retries.
+
 ## Safe Test Alert
 
 Use a temporary Prometheus rule to test the full Prometheus-to-Alertmanager pipeline without breaking production services:
@@ -226,9 +367,11 @@ tail -n 40 /srv/shreyws/logs/alertmanager/alerts.jsonl
 
 The log should show a `firing` notification followed by a `resolved` notification. Always remove `shreyws-test-alert.yml` after testing.
 
+When Telegram is enabled, the same test should also deliver a firing Telegram message and a resolved Telegram message.
+
 ## External Notifications
 
-The initial receiver is local logging only and requires no secrets.
+The always-on receiver is local logging and requires no secrets. Telegram is the first optional external notification channel and reads credentials from the runtime secret file.
 
 To add an external channel later:
 
@@ -248,6 +391,43 @@ compose/monitoring/prometheus/rules/shreyws-alerts.yml
 ```
 
 Prefer increasing `for:` durations before weakening thresholds.
+
+## Telegram Troubleshooting
+
+Bot blocked:
+
+- Open the bot chat and press Start again.
+- Confirm the bot token has not been revoked.
+
+Wrong chat ID:
+
+- Re-run `get-telegram-chat-id.py` after sending a new message.
+- Group chat IDs are commonly negative.
+
+Bot not added to group:
+
+- Add the bot to the group and send a message that mentions or wakes the bot.
+
+Group privacy or settings:
+
+- If the helper cannot see group updates, temporarily disable BotFather privacy for the bot or send a direct command/message to the bot inside the group.
+
+Telegram API unavailable:
+
+- The webhook returns a non-2xx response so Alertmanager can retry.
+- Check `docker logs shreyws-telegram-alert-webhook`.
+
+Malformed formatting:
+
+- The webhook sends plain text, not Markdown or HTML, to avoid fragile escaping problems.
+
+Token leak:
+
+1. Revoke the bot token with BotFather.
+2. Generate a new token.
+3. Update `/srv/shreyws/secrets/alertmanager/telegram.env`.
+4. Recreate only `telegram-alert-webhook`.
+5. Run the synthetic test alert.
 
 ## Limitations
 
