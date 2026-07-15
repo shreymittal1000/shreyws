@@ -36,6 +36,7 @@ emit_metrics() {
   compressed_bytes="0"
   deduplicated_bytes="0"
   reboot_required="0"
+  check_last_success="0"
 
   if [ -r "$backup_log" ]; then
     last_success_line="$(grep 'Backup completed' "$backup_log" | tail -1 || true)"
@@ -64,6 +65,7 @@ emit_metrics() {
 
   if [ -r "$check_log" ] && grep -q 'Repository verification completed' "$check_log"; then
     verify_status="1"
+    check_last_success="$(stat -c %Y "$check_log" 2>/dev/null || echo 0)"
   fi
   if [ -e /host/run/reboot-required ]; then
     reboot_required="1"
@@ -73,6 +75,13 @@ emit_metrics() {
   if [ "$last_success" -gt 0 ]; then
     age="$((now - last_success))"
   fi
+
+  check_age="0"
+  if [ "$check_last_success" -gt 0 ]; then
+    check_age="$((now - check_last_success))"
+  fi
+
+  backups_usage="$(df -P /backups | awk 'NR==2 { gsub("%", "", $5); printf "%.6f", $5 / 100 }')"
 
   {
     echo '# HELP shreyws_backup_last_success_timestamp_seconds Unix timestamp of the last completed ShreyWS Borg backup.'
@@ -93,6 +102,12 @@ emit_metrics() {
     echo '# HELP shreyws_backup_verify_data_success Last full verify-data check status, 1 for success.'
     echo '# TYPE shreyws_backup_verify_data_success gauge'
     echo "shreyws_backup_verify_data_success $verify_status"
+    echo '# HELP shreyws_backup_check_last_success_timestamp_seconds Unix timestamp of the last completed ShreyWS Borg verify-data check.'
+    echo '# TYPE shreyws_backup_check_last_success_timestamp_seconds gauge'
+    echo "shreyws_backup_check_last_success_timestamp_seconds $check_last_success"
+    echo '# HELP shreyws_backup_check_age_seconds Seconds since the last completed ShreyWS Borg verify-data check.'
+    echo '# TYPE shreyws_backup_check_age_seconds gauge'
+    echo "shreyws_backup_check_age_seconds $check_age"
     echo '# HELP shreyws_backup_archive_bytes Last Borg archive size by size type.'
     echo '# TYPE shreyws_backup_archive_bytes gauge'
     echo "shreyws_backup_archive_bytes{type=\"original\"} $original_bytes"
@@ -101,6 +116,9 @@ emit_metrics() {
     echo '# HELP shreyws_reboot_required Whether the host has /run/reboot-required present.'
     echo '# TYPE shreyws_reboot_required gauge'
     echo "shreyws_reboot_required $reboot_required"
+    echo '# HELP shreyws_filesystem_usage_ratio Filesystem usage ratio for ShreyWS critical mount points.'
+    echo '# TYPE shreyws_filesystem_usage_ratio gauge'
+    echo "shreyws_filesystem_usage_ratio{mountpoint=\"/srv/shreyws/backups\"} $backups_usage"
   } > "$TMP_FILE"
   mv "$TMP_FILE" "$OUT_FILE"
 }

@@ -24,6 +24,59 @@ services:
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
       - diun.enable=true
 
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: shreyws-alertmanager
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=:9093"
+    volumes:
+      - /srv/shreyws/infra/compose/monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - /srv/shreyws/services/alertmanager:/alertmanager
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:9093/-/ready
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - diun.enable=true
+
+  alert-log-webhook:
+    image: python:3.13.5-alpine3.22
+    container_name: shreyws-alert-log-webhook
+    restart: unless-stopped
+    networks:
+      - traefik_default
+    command: ["python", "/app/alert-log-webhook.py"]
+    environment:
+      ALERT_LOG_PATH: /alerts/alerts.jsonl
+    volumes:
+      - /srv/shreyws/infra/compose/monitoring/alert-log-webhook/alert-log-webhook.py:/app/alert-log-webhook.py:ro
+      - /srv/shreyws/logs/alertmanager:/alerts
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8080/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - diun.enable=true
+
   node-exporter:
     image: prom/node-exporter:v1.11.1
     container_name: shreyws-node-exporter
@@ -51,6 +104,7 @@ services:
       - /srv/shreyws/infra/compose/monitoring/backup-metrics/backup-metrics.sh:/usr/local/bin/backup-metrics.sh:ro
       - /var/log/shreyws-backup:/logs:ro
       - /run:/host/run:ro
+      - /srv/shreyws/backups:/backups:ro
       - /srv/shreyws/services/node-exporter/textfile:/textfile
     labels:
       - diun.enable=true

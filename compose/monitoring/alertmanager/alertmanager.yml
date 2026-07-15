@@ -1,0 +1,27 @@
+global:
+  resolve_timeout: 2m
+
+route:
+  receiver: local-alert-log
+  group_by: ["alertname", "severity", "job", "instance"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+inhibit_rules:
+  - source_matchers:
+      - alertname="FilesystemUsageCritical"
+    target_matchers:
+      - alertname="FilesystemUsageWarning"
+    equal: ["mountpoint"]
+  - source_matchers:
+      - alertname="HostMetricsMissing"
+    target_matchers:
+      - severity="warning"
+    equal: ["instance"]
+
+receivers:
+  - name: local-alert-log
+    webhook_configs:
+      - url: http://alert-log-webhook:8080/alert
+        send_resolved: true

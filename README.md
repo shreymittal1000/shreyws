@@ -105,6 +105,7 @@ Operational documentation:
 * [Authentik forward-auth](docs/authentik-forward-auth.md)
 * [Homepage](docs/homepage.md)
 * [Container update management](docs/container-update-management.md)
+* [Alerting](docs/alerting.md)
 
 ---
 

@@ -1,112 +1,143 @@
 groups:
-  - name: shreyws-critical
+  - name: shreyws-backups
     rules:
-      - alert: HostDown
-        expr: up{job="node-exporter"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "ShreyWS host metrics are down"
-          description: "Prometheus cannot scrape node-exporter."
-
-      - alert: PrometheusDown
-        expr: up{job="prometheus"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Prometheus self-scrape is down"
-          description: "Prometheus cannot scrape its own metrics endpoint."
-
-      - alert: TraefikDown
-        expr: up{job="traefik"} == 0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Traefik metrics are down"
-          description: "Prometheus cannot scrape Traefik metrics."
-
-      - alert: BackupFailed
-        expr: shreyws_backup_last_success == 0 or shreyws_backup_repository_check_success == 0
+      - alert: BackupMetricsMissing
+        expr: absent(shreyws_backup_last_success)
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "ShreyWS backup did not complete successfully"
-          description: "The latest backup or repository check has not reported success."
+          summary: "ShreyWS backup metrics are missing"
+          description: "Node Exporter textfile metrics for Borg backup status are not present."
 
-      - alert: BackupOlderThan48Hours
-        expr: shreyws_backup_age_seconds > 172800
-        for: 15m
+      - alert: BackupJobFailed
+        expr: shreyws_backup_last_success == 0
+        for: 20m
         labels:
           severity: critical
         annotations:
-          summary: "ShreyWS backup is older than 48 hours"
-          description: "No successful Borg backup has completed in the last 48 hours."
+          summary: "ShreyWS Borg backup failed"
+          description: "The latest Borg backup did not report success."
 
-  - name: shreyws-warning
+      - alert: BackupRepositoryCheckFailed
+        expr: shreyws_backup_repository_check_success == 0
+        for: 20m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS Borg repository check failed"
+          description: "The repository-only consistency check from the latest backup did not report success."
+
+      - alert: BackupVerifyDataFailed
+        expr: shreyws_backup_verify_data_success == 0
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS Borg verify-data check failed"
+          description: "The weekly Borg verify-data check has not reported success."
+
+      - alert: BackupTooOld
+        expr: shreyws_backup_age_seconds > 129600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS backup is older than 36 hours"
+          description: "The daily backup timer last reported success more than 36 hours ago."
+
+      - alert: BackupCheckTooOld
+        expr: shreyws_backup_check_age_seconds > 777600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS backup verification is older than 9 days"
+          description: "The weekly backup verification has not reported success within the expected window."
+
+  - name: shreyws-storage
     rules:
-      - alert: FilesystemUsageHigh
-        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|vfat|overlay"}) > 0.80
-        for: 15m
+      - alert: FilesystemUsageWarning
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+              /
+              node_filesystem_size_bytes{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+            )
+          ) > 0.80
+          or
+          shreyws_filesystem_usage_ratio{mountpoint="/srv/shreyws/backups"} > 0.80
+        for: 30m
         labels:
           severity: warning
         annotations:
           summary: "Filesystem usage is above 80%"
-          description: "Filesystem {{ $labels.mountpoint }} is above 80% used."
+          description: "{{ $labels.mountpoint }} is {{ humanizePercentage $value }} used."
 
-      - alert: FilesystemAlmostFull
-        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|vfat|overlay"}) > 0.90
+      - alert: FilesystemUsageCritical
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+              /
+              node_filesystem_size_bytes{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+            )
+          ) > 0.90
+          or
+          shreyws_filesystem_usage_ratio{mountpoint="/srv/shreyws/backups"} > 0.90
         for: 10m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Filesystem is almost full"
-          description: "Filesystem {{ $labels.mountpoint }} is above 90% used."
+          summary: "Filesystem usage is above 90%"
+          description: "{{ $labels.mountpoint }} is {{ humanizePercentage $value }} used."
 
-      - alert: InodesLow
-        expr: (1 - node_filesystem_files_free{fstype!~"tmpfs|vfat|overlay"} / node_filesystem_files{fstype!~"tmpfs|vfat|overlay"}) > 0.80
+      - alert: FilesystemMetricMissing
+        expr: absent(shreyws_filesystem_usage_ratio{mountpoint="/srv/shreyws/backups"})
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Filesystem inode usage is high"
-          description: "Filesystem {{ $labels.mountpoint }} inode usage is above 80%."
+          summary: "Expected ShreyWS filesystem metrics are missing"
+          description: "The filesystem usage metric for /srv/shreyws/backups is missing."
 
-      - alert: MemoryUsageHigh
-        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Memory usage is above 90%"
-          description: "Host memory pressure has been high for 15 minutes."
-
-      - alert: CpuUsageHigh
-        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.95
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "CPU usage is above 95%"
-          description: "CPU usage has been above 95% for 15 minutes."
-
-      - alert: OomKillObserved
-        expr: increase(node_vmstat_oom_kill[15m]) > 0 or increase(container_oom_events_total[15m]) > 0
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "OOM kill observed"
-          description: "The host or a container reported an OOM event."
-
-      - alert: ContainerRestartedRecently
-        expr: changes(container_start_time_seconds{name!=""}[30m]) > 1
+  - name: shreyws-containers
+    rules:
+      - alert: ShreyWSContainerUnhealthy
+        expr: container_health_state{container_label_diun_enable="true", name=~"shreyws-.+"} == 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Container restarted repeatedly"
-          description: "Container {{ $labels.name }} restarted more than once in 30 minutes."
+          summary: "ShreyWS-managed container is unhealthy"
+          description: "{{ $labels.name }} has reported Docker health status unhealthy for 5 minutes."
+
+      - alert: ShreyWSContainerRestartLoop
+        expr: changes(container_start_time_seconds{container_label_diun_enable="true", name=~"shreyws-.+"}[30m]) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS-managed container is restarting repeatedly"
+          description: "{{ $labels.name }} restarted more than twice in 30 minutes."
+
+  - name: shreyws-targets
+    rules:
+      - alert: HostMetricsMissing
+        expr: up{job="node-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS host metrics are missing"
+          description: "Prometheus cannot scrape Node Exporter for 5 minutes."
+
+      - alert: PrometheusTargetDown
+        expr: up{job=~"prometheus|node-exporter|cadvisor|traefik|alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target is down"
+          description: "Prometheus target {{ $labels.job }} at {{ $labels.instance }} has been down for 5 minutes."
