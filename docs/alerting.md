@@ -107,6 +107,8 @@ Disk:
 
 - Warning above 80% usage for 30 minutes.
 - Critical above 90% usage for 10 minutes.
+- Inode warning above 80% usage for 30 minutes.
+- Inode critical above 90% usage for 10 minutes.
 - Covered mount points:
   - `/`
   - `/srv`
@@ -114,10 +116,24 @@ Disk:
 
 The `/` and `/srv` mount points use native Node Exporter filesystem metrics. The `/srv/shreyws/backups` mount is exported through the existing textfile metrics path because Node Exporter cannot currently stat that mount from its container without permission errors.
 
+Inode alerts currently cover `/` and `/srv`, where Node Exporter exposes inode metrics. The backup disk textfile metric currently covers byte usage only.
+
+Host:
+
+- `HostHighCpuUsage`: CPU utilization above 90% for 30 minutes.
+- `HostHighLoadAverage`: 15-minute load average above 1.5x CPU count for 30 minutes.
+- `HostHighMemoryUsage`: memory usage above 90% for 30 minutes.
+- `HostCriticalMemoryUsage`: memory usage above 95% for 10 minutes.
+
+These thresholds are intentionally sustained rather than instant. Short compile jobs, container updates, and dashboard queries should not alert unless they create prolonged pressure.
+
 Containers:
 
 - `ShreyWSContainerUnhealthy`: a ShreyWS-managed Docker healthcheck reports unhealthy for 5 minutes.
 - `ShreyWSContainerRestartLoop`: a ShreyWS-managed container restarts more than twice in 30 minutes and remains in that state for 10 minutes.
+- `ShreyWSContainerUnexpectedlyDown`: an expected ShreyWS-managed container disappears from cAdvisor metrics for 5 minutes.
+- `ShreyWSContainerOomEvent`: a ShreyWS-managed container reports an OOM event within a 15-minute window.
+- `TelegramAlertWebhookUnavailable`: the Telegram alert webhook container disappears from cAdvisor metrics for 5 minutes.
 
 Container filters use existing repository-owned Docker labels:
 
@@ -126,12 +142,21 @@ container_label_diun_enable="true"
 name=~"shreyws-.+"
 ```
 
-This ignores unrelated containers not managed by this repository.
+This ignores unrelated containers not managed by this repository. The unexpected-down rule is intentionally explicit about expected ShreyWS container names, because cAdvisor cannot infer that a missing container should exist.
 
 Targets and host:
 
 - `HostMetricsMissing`: Node Exporter scrape is down for 5 minutes.
 - `PrometheusTargetDown`: expected scrape target is down for 5 minutes.
+- `AlertmanagerUnavailable`: Alertmanager scrape is down for 5 minutes.
+
+`PrometheusTargetDown` is a general warning for expected scrape targets. `AlertmanagerUnavailable` is critical because Alertmanager is required for JSONL and Telegram delivery.
+
+SMART:
+
+- No Prometheus SMART alert is currently configured because no SMART metric series are exported to Prometheus.
+- `smartmontools.service` remains the active disk-health mechanism.
+- A future root-level smartd hook can export SMART status through Node Exporter's textfile collector without adding a privileged SMART exporter container.
 
 ## Grouping and Inhibition
 
@@ -151,6 +176,9 @@ Timing:
 Inhibition:
 
 - Critical filesystem alerts suppress matching warning filesystem alerts for the same mount point.
+- Critical inode alerts suppress matching warning inode alerts for the same mount point.
+- Critical memory alerts suppress matching warning memory alerts for the same instance.
+- `AlertmanagerUnavailable` suppresses the matching generic `PrometheusTargetDown` warning.
 - Host metrics missing can suppress lower-severity dependent alerts where the `instance` label matches.
 
 Alertmanager sends each alert group to two independent webhook receivers:
@@ -355,19 +383,27 @@ docker run --rm --entrypoint promtool \
   -v /srv/shreyws/infra/compose/monitoring/prometheus/rules:/rules:ro \
   prom/prometheus:v3.13.0 check rules /rules/shreyws-test-alert.yml
 
-docker compose restart prometheus
+docker kill -s HUP shreyws-prometheus
 sleep 60
 tail -n 20 /srv/shreyws/logs/alertmanager/alerts.jsonl
 
 rm prometheus/rules/shreyws-test-alert.yml
-docker compose restart prometheus
+docker kill -s HUP shreyws-prometheus
 sleep 180
 tail -n 40 /srv/shreyws/logs/alertmanager/alerts.jsonl
 ```
 
 The log should show a `firing` notification followed by a `resolved` notification. Always remove `shreyws-test-alert.yml` after testing.
 
-When Telegram is enabled, the same test should also deliver a firing Telegram message and a resolved Telegram message.
+When Telegram is enabled, the same test should also deliver a firing Telegram message and a resolved Telegram message. Expected Telegram output is concise plain text with:
+
+- `ShreyWS Alertmanager: FIRING` or `ShreyWS Alertmanager: RESOLVED`
+- grouped alert count
+- alert name
+- severity
+- summary
+- description when present
+- affected instance or service
 
 ## External Notifications
 

@@ -102,6 +102,93 @@ groups:
           summary: "Expected ShreyWS filesystem metrics are missing"
           description: "The filesystem usage metric for /srv/shreyws/backups is missing."
 
+      - alert: FilesystemInodesWarning
+        expr: |
+          (
+            1 - (
+              node_filesystem_files_free{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+              /
+              node_filesystem_files{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+            )
+          ) > 0.80
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filesystem inode usage is above 80%"
+          description: "{{ $labels.mountpoint }} inode usage is {{ humanizePercentage $value }}. A filesystem can run out of inodes even when byte usage is acceptable."
+
+      - alert: FilesystemInodesCritical
+        expr: |
+          (
+            1 - (
+              node_filesystem_files_free{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+              /
+              node_filesystem_files{mountpoint=~"/|/srv", fstype!~"tmpfs|overlay|squashfs|vfat|iso9660"}
+            )
+          ) > 0.90
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Filesystem inode usage is above 90%"
+          description: "{{ $labels.mountpoint }} inode usage is {{ humanizePercentage $value }}. Create fewer files or free inodes before writes begin failing."
+
+  - name: shreyws-host
+    rules:
+      - alert: HostHighCpuUsage
+        expr: |
+          1 - avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
+          ) > 0.90
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host CPU usage is above 90%"
+          description: "ShreyWS CPU usage has stayed above 90% for 30 minutes."
+
+      - alert: HostHighLoadAverage
+        expr: |
+          node_load15
+          /
+          count by (instance, job) (node_cpu_seconds_total{mode="idle"})
+          > 1.50
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host load average is high"
+          description: "ShreyWS 15-minute load average is more than 1.5x the CPU count for 30 minutes."
+
+      - alert: HostHighMemoryUsage
+        expr: |
+          1 - (
+            node_memory_MemAvailable_bytes
+            /
+            node_memory_MemTotal_bytes
+          ) > 0.90
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory usage is above 90%"
+          description: "ShreyWS available memory has stayed below 10% for 30 minutes."
+
+      - alert: HostCriticalMemoryUsage
+        expr: |
+          1 - (
+            node_memory_MemAvailable_bytes
+            /
+            node_memory_MemTotal_bytes
+          ) > 0.95
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host memory usage is above 95%"
+          description: "ShreyWS available memory has stayed below 5% for 10 minutes."
+
   - name: shreyws-containers
     rules:
       - alert: ShreyWSContainerUnhealthy
@@ -122,6 +209,48 @@ groups:
           summary: "ShreyWS-managed container is restarting repeatedly"
           description: "{{ $labels.name }} restarted more than twice in 30 minutes."
 
+      - alert: ShreyWSContainerUnexpectedlyDown
+        expr: |
+          absent(container_last_seen{name="shreyws-alert-log-webhook"})
+          or absent(container_last_seen{name="shreyws-alertmanager"})
+          or absent(container_last_seen{name="shreyws-authentik-postgresql"})
+          or absent(container_last_seen{name="shreyws-authentik-proxy"})
+          or absent(container_last_seen{name="shreyws-authentik-server"})
+          or absent(container_last_seen{name="shreyws-authentik-worker"})
+          or absent(container_last_seen{name="shreyws-backup-metrics"})
+          or absent(container_last_seen{name="shreyws-cadvisor"})
+          or absent(container_last_seen{name="shreyws-diun"})
+          or absent(container_last_seen{name="shreyws-grafana"})
+          or absent(container_last_seen{name="shreyws-homepage"})
+          or absent(container_last_seen{name="shreyws-node-exporter"})
+          or absent(container_last_seen{name="shreyws-prometheus"})
+          or absent(container_last_seen{name="shreyws-telegram-alert-webhook"})
+          or absent(container_last_seen{name="shreyws-traefik"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Expected ShreyWS container is not visible"
+          description: "{{ $labels.name }} is not visible in cAdvisor metrics. It may be stopped, missing, or cAdvisor may be unable to see Docker containers."
+
+      - alert: ShreyWSContainerOomEvent
+        expr: increase(container_oom_events_total{container_label_diun_enable="true", name=~"shreyws-.+"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS-managed container had an OOM event"
+          description: "{{ $labels.name }} reported an OOM event in the last 15 minutes. Check container logs and memory pressure."
+
+      - alert: TelegramAlertWebhookUnavailable
+        expr: absent(container_last_seen{name="shreyws-telegram-alert-webhook"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Telegram alert webhook is unavailable"
+          description: "The Telegram alert webhook container is not visible in cAdvisor metrics. Telegram notifications may not be delivered, but local JSONL logging should continue if Alertmanager is healthy."
+
   - name: shreyws-targets
     rules:
       - alert: HostMetricsMissing
@@ -141,3 +270,12 @@ groups:
         annotations:
           summary: "Prometheus target is down"
           description: "Prometheus target {{ $labels.job }} at {{ $labels.instance }} has been down for 5 minutes."
+
+      - alert: AlertmanagerUnavailable
+        expr: up{job="alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager is unavailable"
+          description: "Prometheus cannot scrape Alertmanager at {{ $labels.instance }} for 5 minutes. Alerts may not be delivered until Alertmanager recovers."

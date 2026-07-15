@@ -23,6 +23,21 @@ inhibit_rules:
       - alertname="FilesystemUsageWarning"
     equal: ["mountpoint"]
   - source_matchers:
+      - alertname="FilesystemInodesCritical"
+    target_matchers:
+      - alertname="FilesystemInodesWarning"
+    equal: ["mountpoint"]
+  - source_matchers:
+      - alertname="HostCriticalMemoryUsage"
+    target_matchers:
+      - alertname="HostHighMemoryUsage"
+    equal: ["instance"]
+  - source_matchers:
+      - alertname="AlertmanagerUnavailable"
+    target_matchers:
+      - alertname="PrometheusTargetDown"
+    equal: ["job", "instance"]
+  - source_matchers:
       - alertname="HostMetricsMissing"
     target_matchers:
       - severity="warning"
