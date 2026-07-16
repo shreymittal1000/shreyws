@@ -1,0 +1,11 @@
+[Unit]
+Description=ShreyWS Borg full repository verification
+Documentation=file:/srv/shreyws/infra/docs/backup-restore.md
+RequiresMountsFor=/srv/shreyws/backups
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shreyws-backup-check
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

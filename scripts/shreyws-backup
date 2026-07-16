@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CONFIG=/etc/shreyws-backup/borg.env
+LOG_DIR=/var/log/shreyws-backup
+LOG_FILE=${LOG_DIR}/backup.log
+LOCK_FILE=/run/shreyws-backup.lock
+STAGING_PARENT=/var/lib/shreyws-backup
+STAGING_DIR=${STAGING_PARENT}/staging
+AUTHENTIK_DUMP=${STAGING_DIR}/authentik-postgresql.dump
+
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_FILE" 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
+}
+
+if [[ ! -r "$CONFIG" ]]; then
+  echo "Missing readable config: $CONFIG" >&2
+  exit 1
+fi
+
+source "$CONFIG"
+export BORG_REPO BORG_PASSPHRASE
+export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=no
+export BORG_RELOCATED_REPO_ACCESS_IS_OK=no
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  log "Another backup is already running; exiting."
+  exit 0
+fi
+
+if ! mountpoint -q /srv/shreyws/backups; then
+  log "Backup disk is not mounted at /srv/shreyws/backups."
+  exit 1
+fi
+
+cleanup() {
+  rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
+
+log "Preparing root-only backup staging area"
+rm -rf "$STAGING_DIR"
+install -d -m 700 "$STAGING_DIR"
+
+log "Creating Authentik PostgreSQL logical dump"
+docker exec shreyws-authentik-postgresql sh -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >"$AUTHENTIK_DUMP"
+chmod 600 "$AUTHENTIK_DUMP"
+
+if [[ ! -s "$AUTHENTIK_DUMP" ]]; then
+  log "Authentik PostgreSQL dump is missing or empty."
+  exit 1
+fi
+
+log "Validating Authentik PostgreSQL logical dump"
+docker exec -i shreyws-authentik-postgresql pg_restore --list <"$AUTHENTIK_DUMP" >/dev/null
+
+archive="shreyws-{now:%Y-%m-%dT%H:%M:%S}"
+log "Starting Borg archive ${archive}"
+
+borg create \
+  --verbose \
+  --filter AME \
+  --list \
+  --stats \
+  --show-rc \
+  --compression "${BORG_COMPRESSION:-zstd,6}" \
+  --exclude-caches \
+  --exclude-if-present .nobackup \
+  --exclude /srv/shreyws/backups \
+  --exclude /srv/shreyws/logs \
+  --exclude /srv/shreyws/services/prometheus/wal \
+  --exclude /srv/shreyws/services/prometheus/chunks_head \
+  --exclude /srv/shreyws/services/grafana/csv \
+  --exclude /srv/shreyws/services/grafana/pdf \
+  --exclude /srv/shreyws/services/grafana/png \
+  --exclude /srv/shreyws/services/grafana/plugins \
+  --exclude /srv/shreyws/services/diun/notifications.log \
+  --exclude /var/lib/docker/volumes/grafana_grafana_data/_data/plugins \
+  --exclude /var/cache \
+  --exclude /var/tmp \
+  --exclude /var/log \
+  --exclude /tmp \
+  --exclude /run \
+  --exclude /proc \
+  --exclude /sys \
+  --exclude /dev \
+  --exclude /mnt \
+  --exclude /media \
+  --exclude /lost+found \
+  --exclude /var/lib/docker/overlay2 \
+  --exclude /var/lib/docker/image \
+  --exclude /var/lib/docker/buildkit \
+  --exclude '*/.cache' \
+  --exclude '*/cache' \
+  --exclude '*/Cache' \
+  --exclude '*/node_modules' \
+  --exclude '*/target' \
+  --exclude '*/dist' \
+  --exclude '*/build' \
+  "::${archive}" \
+  /etc \
+  /usr/local/sbin/shreyws-backup \
+  /usr/local/sbin/shreyws-backup-check \
+  /home/shreyws \
+  /srv/shreyws/infra \
+  /srv/shreyws/config \
+  /srv/shreyws/agents \
+  /srv/shreyws/compose \
+  /srv/shreyws/secrets \
+  /srv/shreyws/services/alertmanager \
+  /srv/shreyws/services/diun \
+  /srv/shreyws/services/grafana \
+  /srv/shreyws/services/prometheus \
+  /var/lib/shreyws-backup \
+  /var/lib/docker/volumes/grafana_grafana_data/_data
+
+if [[ "${SHREYWS_BACKUP_SKIP_PRUNE:-0}" == "1" ]]; then
+  log "Skipping prune because SHREYWS_BACKUP_SKIP_PRUNE=1"
+else
+  log "Pruning old archives: 7 daily, 5 weekly, 12 monthly"
+  borg prune \
+    --list \
+    --show-rc \
+    --keep-daily=7 \
+    --keep-weekly=5 \
+    --keep-monthly=12 \
+    --glob-archives 'shreyws-*'
+fi
+
+log "Running repository-only consistency check"
+borg check --repository-only --show-rc
+
+log "Backup completed"

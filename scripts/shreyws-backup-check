@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CONFIG=/etc/shreyws-backup/borg.env
+LOG_DIR=/var/log/shreyws-backup
+LOG_FILE=${LOG_DIR}/check.log
+
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_FILE" 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
+}
+
+if [[ ! -r "$CONFIG" ]]; then
+  echo "Missing readable config: $CONFIG" >&2
+  exit 1
+fi
+
+source "$CONFIG"
+export BORG_REPO BORG_PASSPHRASE
+export BORG_RELOCATED_REPO_ACCESS_IS_OK=no
+
+if ! mountpoint -q /srv/shreyws/backups; then
+  log "Backup disk is not mounted at /srv/shreyws/backups."
+  exit 1
+fi
+
+log "Starting full Borg repository verification with data checks"
+borg check --verify-data --show-rc
+log "Repository verification completed"

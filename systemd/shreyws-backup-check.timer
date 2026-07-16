@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ShreyWS Borg full repository verification weekly
+
+[Timer]
+OnCalendar=Sun 04:30:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=shreyws-backup-check.service
+
+[Install]
+WantedBy=timers.target
