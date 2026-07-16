@@ -3,6 +3,11 @@ services:
     image: grafana/loki:3.5.1
     container_name: shreyws-loki
     restart: unless-stopped
+    pids_limit: 512
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command:
       - "-config.file=/etc/loki/loki.yml"
     networks:
@@ -26,6 +31,11 @@ services:
     container_name: shreyws-alloy
     restart: unless-stopped
     user: "0:0"
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command:
       - run
       - "--server.http.listen-addr=0.0.0.0:12345"

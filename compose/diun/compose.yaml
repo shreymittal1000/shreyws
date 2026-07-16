@@ -3,6 +3,11 @@ services:
     image: crazymax/diun:4.33.0
     container_name: shreyws-diun
     restart: unless-stopped
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command: serve --config /diun.yml
     environment:
       TZ: Europe/Zurich

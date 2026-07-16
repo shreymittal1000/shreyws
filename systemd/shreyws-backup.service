@@ -8,6 +8,25 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/shreyws-backup
+Environment=HOME=/var/lib/shreyws-backup/borg-home
+Environment=BORG_CACHE_DIR=/var/cache/shreyws-backup/borg-cache
+Environment=BORG_CONFIG_DIR=/var/lib/shreyws-backup/borg-config
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/shreyws/backups /var/log/shreyws-backup /var/lib/shreyws-backup /var/cache/shreyws-backup /run
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native

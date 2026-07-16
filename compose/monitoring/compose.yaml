@@ -55,11 +55,20 @@ services:
     image: python:3.13.5-alpine3.22
     container_name: shreyws-alert-log-webhook
     restart: unless-stopped
+    read_only: true
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - traefik_default
     command: ["python", "/app/alert-log-webhook.py"]
     environment:
       ALERT_LOG_PATH: /alerts/alerts.jsonl
+      PYTHONDONTWRITEBYTECODE: "1"
+    tmpfs:
+      - /tmp
     volumes:
       - /srv/shreyws/infra/compose/monitoring/alert-log-webhook/alert-log-webhook.py:/app/alert-log-webhook.py:ro
       - /srv/shreyws/logs/alertmanager:/alerts
@@ -81,9 +90,19 @@ services:
     image: python:3.13.5-alpine3.22
     container_name: shreyws-telegram-alert-webhook
     restart: unless-stopped
+    read_only: true
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - traefik_default
     command: ["python", "/app/telegram-alert-webhook.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    tmpfs:
+      - /tmp
     volumes:
       - /srv/shreyws/infra/compose/monitoring/telegram-webhook/telegram-alert-webhook.py:/app/telegram-alert-webhook.py:ro
       - /srv/shreyws/infra/compose/monitoring/telegram-webhook/get-telegram-chat-id.py:/app/get-telegram-chat-id.py:ro
@@ -122,9 +141,16 @@ services:
     image: alpine:3.20
     container_name: shreyws-backup-metrics
     restart: unless-stopped
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - traefik_default
     command: ["/bin/sh", "/usr/local/bin/backup-metrics.sh"]
+    tmpfs:
+      - /tmp
     volumes:
       - /srv/shreyws/infra/compose/monitoring/backup-metrics/backup-metrics.sh:/usr/local/bin/backup-metrics.sh:ro
       - /var/log/shreyws-backup:/logs:ro
