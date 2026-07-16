@@ -1,0 +1,57 @@
+# Template for a class-B owner-trusted web application.
+# Copy into compose/<app>/compose.yaml and replace every placeholder.
+# This file is intentionally not runnable as-is.
+
+services:
+  app:
+    image: registry.example.com/example/app:0.0.0
+    container_name: shreyws-example-app
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 256m
+    cpus: "0.50"
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - app_frontend
+      # Add app_backend only if this app has a private database/cache.
+      # - app_backend
+    environment:
+      APP_BASE_PATH: /example
+    tmpfs:
+      - /tmp
+    volumes:
+      - /srv/shreyws/infra/compose/example/config:/app/config:ro
+      - /srv/shreyws/services/example:/data
+      # Mount real secrets read-only only if required:
+      # - /srv/shreyws/secrets/example/app.env:/run/secrets/app.env:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=example_frontend
+      - traefik.http.routers.example.tls=true
+      - traefik.http.routers.example.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/example`)
+      - traefik.http.routers.example.entrypoints=websecure
+      - traefik.http.routers.example.middlewares=authentik-forward-auth@docker
+      - traefik.http.services.example.loadbalancer.server.port=8080
+      - diun.enable=true
+      - shreyws.trust_class=owner-trusted
+      - shreyws.workload=example
+      - shreyws.owner=owner
+
+networks:
+  app_frontend:
+    name: example_frontend
+    external: true
+  # app_backend:
+  #   name: example_backend
+  #   internal: true

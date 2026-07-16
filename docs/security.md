@@ -196,7 +196,7 @@ sudo apt purge unattended-upgrades
 
 - Activate a tested nftables firewall policy with physical fallback available.
 - Restrict SSH/RDP bind/access to Tailscale and trusted LAN if operationally acceptable.
-- Pin remaining floating images to known-good versions.
+- Continue reviewing image updates through Diun and the controlled update workflow. The previously floating Grafana, Homepage and cAdvisor images were pinned to their already-running versions on 2026-07-16.
 - Evaluate a Docker socket proxy using measured API needs for each consumer.
 - Split Docker networks further only after mapping required service-to-service flows.
 - Decide whether Avahi/GNOME Remote Desktop listeners are still needed.

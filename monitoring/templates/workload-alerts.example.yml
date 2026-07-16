@@ -1,0 +1,26 @@
+groups:
+  - name: example-workload
+    rules:
+      - alert: ExampleWorkloadTargetDown
+        expr: up{job="example-workload"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          trust_class: owner-trusted
+        annotations:
+          summary: "Example workload is unavailable"
+          description: "Prometheus cannot scrape the example workload for 5 minutes."
+
+      - alert: ExampleWorkloadMemoryPressure
+        expr: |
+          container_memory_working_set_bytes{name="shreyws-example-app"}
+          /
+          container_spec_memory_limit_bytes{name="shreyws-example-app"}
+          > 0.90
+        for: 15m
+        labels:
+          severity: warning
+          trust_class: owner-trusted
+        annotations:
+          summary: "Example workload memory usage is high"
+          description: "The example workload has used more than 90% of its memory limit for 15 minutes."

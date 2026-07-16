@@ -33,9 +33,12 @@ services:
 
     networks:
       - traefik_default
+      - pilot_frontend
     labels:
       - diun.enable=true
 
 networks:
   traefik_default:
+    external: true
+  pilot_frontend:
     external: true

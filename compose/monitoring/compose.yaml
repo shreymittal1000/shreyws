@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     networks:
       - traefik_default
+      - pilot_frontend
     volumes:
       - /srv/shreyws/infra/compose/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - /srv/shreyws/infra/compose/monitoring/prometheus/rules:/etc/prometheus/rules:ro
@@ -138,7 +139,7 @@ services:
       - diun.enable=true
 
   backup-metrics:
-    image: alpine:3.20
+    image: alpine:3.20.10
     container_name: shreyws-backup-metrics
     restart: unless-stopped
     pids_limit: 128
@@ -161,7 +162,7 @@ services:
       - diun.enable=true
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
     container_name: shreyws-cadvisor
     restart: unless-stopped
     networks:
@@ -209,4 +210,6 @@ services:
 
 networks:
   traefik_default:
+    external: true
+  pilot_frontend:
     external: true

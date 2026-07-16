@@ -35,3 +35,28 @@ Core operational systems:
 - Diun reports container image updates without applying them automatically.
 
 The pilot workload follows the same architecture as future internal services while avoiding privileged access and unnecessary dependencies.
+
+## Workload Trust Classes
+
+ShreyWS uses three trust classes:
+
+- Platform infrastructure: Traefik, Authentik, monitoring, logging and backup components.
+- Owner-trusted applications: the pilot workload and future personal internal applications.
+- Guest or untrusted workloads: friend/family services, arbitrary uploads, adversarial prompts, browser agents or code execution.
+
+Docker containers are acceptable for platform and owner-trusted applications when privileges are minimized. Docker alone is not a strong security boundary for intentionally hostile code.
+
+## Current Network Direction
+
+The platform is moving from one broad shared Docker network toward small app-specific frontend networks. The first live split is:
+
+```text
+pilot_frontend:
+  shreyws-pilot
+  shreyws-traefik
+  shreyws-prometheus
+```
+
+Existing infrastructure services remain on `traefik_default` until their dependencies can be migrated safely one group at a time.
+
+See [Agent platform architecture](agent-platform.md) for the future workload model.

@@ -78,28 +78,27 @@ Current image classifications:
 
 | Project | Service | Image | Classification |
 | --- | --- | --- | --- |
-| authentik | postgresql | `postgres:16-alpine` | major-version floating |
+| authentik | postgresql | `postgres:16.14-alpine` | fixed version |
 | authentik | server | `ghcr.io/goauthentik/server:2026.5.3` | fixed version |
 | authentik | proxy | `ghcr.io/goauthentik/proxy:2026.5.3` | fixed version |
 | authentik | worker | `ghcr.io/goauthentik/server:2026.5.3` | fixed version |
 | diun | diun | `crazymax/diun:4.33.0` | fixed version |
-| grafana | grafana | `grafana/grafana:latest` | latest / unbounded |
-| homepage | homepage | `ghcr.io/gethomepage/homepage:latest` | latest / unbounded |
+| grafana | grafana | `grafana/grafana:13.1.0` | fixed version |
+| homepage | homepage | `ghcr.io/gethomepage/homepage:v1.13.2` | fixed version |
 | monitoring | prometheus | `prom/prometheus:v3.13.0` | fixed version |
 | monitoring | node-exporter | `prom/node-exporter:v1.11.1` | fixed version |
-| monitoring | backup-metrics | `alpine:3.20` | minor-version floating |
-| monitoring | cadvisor | `gcr.io/cadvisor/cadvisor:latest` | latest / unbounded |
+| monitoring | backup-metrics | `alpine:3.20.10` | fixed patch version |
+| monitoring | cadvisor | `gcr.io/cadvisor/cadvisor:v0.55.1` | fixed version |
 | traefik | traefik | `traefik:v3.6.1` | fixed version |
 
 Recommended future pinning:
 
-- Pin Grafana to a tested major/minor version before applying future updates.
+- Grafana, Homepage, cAdvisor, PostgreSQL and Alpine helper images are pinned to the exact tags that matched their already-running image digests on 2026-07-16.
 - Prometheus and Node Exporter are pinned to the versions that were already running when update management was introduced.
-- Pin cAdvisor to a known-good release if the `latest` tag becomes noisy or unstable.
 - Keep Authentik fixed-version pinned and upgrade it deliberately because it is now part of the authentication path.
 - Keep Traefik fixed-version pinned and upgrade deliberately because it is the HTTPS entrypoint.
 
-No broad pinning rewrite was done. Diun, Prometheus, and Node Exporter are fixed-version pinned; the remaining `latest` references are documented above as future pinning candidates.
+No automatic image upgrades are performed. Version pinning reduces surprise changes; Diun and the manual update workflow remain responsible for reviewed updates.
 
 ## Manual Update Check
 

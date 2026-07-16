@@ -111,6 +111,7 @@ Operational documentation:
 * [Security](docs/security.md)
 * [Architecture](docs/architecture.md)
 * [Pilot workload](docs/pilot-workload.md)
+* [Agent platform architecture](docs/agent-platform.md)
 
 ---
 

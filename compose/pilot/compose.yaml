@@ -13,7 +13,7 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - traefik_default
+      - pilot_frontend
     command: ["python", "/app/pilot.py"]
     environment:
       PILOT_BASE_PATH: /pilot
@@ -37,7 +37,7 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      - traefik.docker.network=traefik_default
+      - traefik.docker.network=pilot_frontend
       - traefik.http.routers.pilot.tls=true
       - traefik.http.routers.pilot.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/pilot`)
       - traefik.http.routers.pilot.entrypoints=websecure
@@ -46,5 +46,5 @@ services:
       - diun.enable=true
 
 networks:
-  traefik_default:
+  pilot_frontend:
     external: true
