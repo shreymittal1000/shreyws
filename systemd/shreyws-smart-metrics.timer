@@ -1,0 +1,13 @@
+[Unit]
+Description=Run ShreyWS SMART disk metrics collector
+Documentation=file:/srv/shreyws/infra/docs/alerting.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=shreyws-smart-metrics.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Export focused SMART disk health metrics for Node Exporter textfile collector."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+TEXTFILE_DIR = Path(os.environ.get("TEXTFILE_DIR", "/srv/shreyws/services/node-exporter/textfile"))
+OUTPUT_FILE = TEXTFILE_DIR / "shreyws_smart.prom"
+SMARTCTL = os.environ.get("SMARTCTL", "/usr/sbin/smartctl")
+
+DEVICES = [
+    {"path": "/dev/sdc", "role": "system"},
+    {"path": "/dev/sda", "role": "srv"},
+    {"path": "/dev/sdb", "role": "backup"},
+]
+
+ATA_ATTRS = {
+    5: "ata_reallocated_sectors",
+    187: "ata_reported_uncorrectable_errors",
+    197: "ata_pending_sectors",
+    198: "ata_offline_uncorrectable_sectors",
+}
+
+
+def prom_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def labels(device: str, role: str) -> str:
+    return f'device="{prom_escape(device)}",role="{prom_escape(role)}"'
+
+
+def metric(name: str, value: float | int, device: str, role: str) -> str:
+    return f"shreyws_smart_{name}{{{labels(device, role)}}} {value}"
+
+
+def raw_attr_value(data: dict, attr_id: int) -> int:
+    for attr in data.get("ata_smart_attributes", {}).get("table", []):
+        if attr.get("id") == attr_id:
+            raw = attr.get("raw", {}).get("value")
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def temperature(data: dict) -> int | None:
+    if "temperature" in data and isinstance(data["temperature"], dict):
+        current = data["temperature"].get("current")
+        if isinstance(current, (int, float)) and 0 < current < 150:
+            return int(current)
+
+    nvme = data.get("nvme_smart_health_information_log", {})
+    current = nvme.get("temperature")
+    if isinstance(current, (int, float)) and 0 < current < 150:
+        return int(current)
+
+    for attr_id in (194, 190):
+        for attr in data.get("ata_smart_attributes", {}).get("table", []):
+            if attr.get("id") == attr_id:
+                raw_string = str(attr.get("raw", {}).get("string", ""))
+                raw_value = attr.get("raw", {}).get("value")
+                candidates = []
+                if raw_string:
+                    candidates.extend(part for part in raw_string.replace("(", " ").replace(")", " ").split() if part.isdigit())
+                if isinstance(raw_value, int):
+                    candidates.append(str(raw_value & 0xFF))
+                    candidates.append(str(raw_value))
+                for candidate in candidates:
+                    value = int(candidate)
+                    if 0 < value < 150:
+                        return value
+    return None
+
+
+def run_smartctl(device: str) -> tuple[dict | None, str | None]:
+    try:
+        result = subprocess.run(
+            [SMARTCTL, "-j", "-i", "-H", "-A", device],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, str(exc)
+
+    try:
+        return json.loads(result.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"invalid smartctl JSON: {exc}"
+
+
+def collect_device(device: str, role: str) -> tuple[list[str], bool]:
+    lines: list[str] = []
+    collection_ok = True
+    present = Path(device).exists()
+
+    lines.append(metric("device_present", 1 if present else 0, device, role))
+    if not present:
+        lines.append(metric("collection_success", 0, device, role))
+        lines.append(metric("supported", 0, device, role))
+        lines.append(metric("available", 0, device, role))
+        lines.append(metric("health_ok", 0, device, role))
+        return lines, False
+
+    data, error = run_smartctl(device)
+    if data is None:
+        lines.append(metric("collection_success", 0, device, role))
+        lines.append(metric("supported", 0, device, role))
+        lines.append(metric("available", 0, device, role))
+        lines.append(metric("health_ok", 0, device, role))
+        print(f"{device}: {error}", file=sys.stderr)
+        return lines, False
+
+    smart_support = data.get("smart_support", {})
+    available = bool(smart_support.get("available", True))
+    enabled = bool(smart_support.get("enabled", available))
+    protocol = data.get("device", {}).get("protocol", "").upper()
+    health = data.get("smart_status", {}).get("passed")
+    collection_success = "smartctl" in data and "device" in data
+
+    if not collection_success:
+        collection_ok = False
+
+    lines.append(metric("collection_success", 1 if collection_success else 0, device, role))
+    lines.append(metric("supported", 1 if available else 0, device, role))
+    lines.append(metric("available", 1 if enabled else 0, device, role))
+    lines.append(metric("health_ok", 1 if health is True else 0, device, role))
+
+    if protocol == "ATA":
+        for attr_id, name in ATA_ATTRS.items():
+            lines.append(metric(name, raw_attr_value(data, attr_id), device, role))
+
+    nvme = data.get("nvme_smart_health_information_log", {})
+    if nvme:
+        lines.append(metric("nvme_critical_warning", int(nvme.get("critical_warning", 0) or 0), device, role))
+        lines.append(metric("nvme_media_errors", int(nvme.get("media_errors", 0) or 0), device, role))
+
+    current_temp = temperature(data)
+    if current_temp is not None:
+        lines.append(metric("temperature_celsius", current_temp, device, role))
+
+    return lines, collection_ok
+
+
+def main() -> int:
+    now = int(time.time())
+    all_ok = True
+
+    lines = [
+        "# HELP shreyws_smart_collection_timestamp_seconds Unix timestamp of the latest SMART metrics collection.",
+        "# TYPE shreyws_smart_collection_timestamp_seconds gauge",
+        f"shreyws_smart_collection_timestamp_seconds {now}",
+        "# HELP shreyws_smart_device_present Whether the configured block device path exists.",
+        "# TYPE shreyws_smart_device_present gauge",
+        "# HELP shreyws_smart_collection_success Whether smartctl returned parseable data for the device.",
+        "# TYPE shreyws_smart_collection_success gauge",
+        "# HELP shreyws_smart_supported Whether SMART support is reported as available.",
+        "# TYPE shreyws_smart_supported gauge",
+        "# HELP shreyws_smart_available Whether SMART is reported as enabled or available for use.",
+        "# TYPE shreyws_smart_available gauge",
+        "# HELP shreyws_smart_health_ok Overall SMART health status, where 1 is passed and 0 is failed or unknown.",
+        "# TYPE shreyws_smart_health_ok gauge",
+        "# HELP shreyws_smart_ata_reallocated_sectors ATA reallocated sector count raw value.",
+        "# TYPE shreyws_smart_ata_reallocated_sectors gauge",
+        "# HELP shreyws_smart_ata_pending_sectors ATA current pending sector count raw value.",
+        "# TYPE shreyws_smart_ata_pending_sectors gauge",
+        "# HELP shreyws_smart_ata_offline_uncorrectable_sectors ATA offline uncorrectable sector count raw value.",
+        "# TYPE shreyws_smart_ata_offline_uncorrectable_sectors gauge",
+        "# HELP shreyws_smart_ata_reported_uncorrectable_errors ATA reported uncorrectable error count raw value.",
+        "# TYPE shreyws_smart_ata_reported_uncorrectable_errors gauge",
+        "# HELP shreyws_smart_nvme_critical_warning NVMe critical warning bitmask.",
+        "# TYPE shreyws_smart_nvme_critical_warning gauge",
+        "# HELP shreyws_smart_nvme_media_errors NVMe media and data integrity error count.",
+        "# TYPE shreyws_smart_nvme_media_errors gauge",
+        "# HELP shreyws_smart_temperature_celsius Current disk temperature in Celsius when reported reliably.",
+        "# TYPE shreyws_smart_temperature_celsius gauge",
+    ]
+
+    for item in DEVICES:
+        device_lines, ok = collect_device(item["path"], item["role"])
+        lines.extend(device_lines)
+        all_ok = all_ok and ok
+
+    TEXTFILE_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".shreyws_smart.", suffix=".prom", dir=TEXTFILE_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
+            temp_file.write("\n".join(lines))
+            temp_file.write("\n")
+        os.chmod(temp_name, 0o644)
+        os.replace(temp_name, OUTPUT_FILE)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

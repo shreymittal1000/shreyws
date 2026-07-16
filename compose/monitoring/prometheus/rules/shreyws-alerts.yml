@@ -134,6 +134,143 @@ groups:
           summary: "Filesystem inode usage is above 90%"
           description: "{{ $labels.mountpoint }} inode usage is {{ humanizePercentage $value }}. Create fewer files or free inodes before writes begin failing."
 
+  - name: shreyws-smart
+    rules:
+      - alert: SmartMetricsMissing
+        expr: absent(shreyws_smart_collection_timestamp_seconds)
+        for: 20m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART textfile metrics are missing"
+          description: "Node Exporter is not exposing the ShreyWS SMART textfile metrics. Check shreyws-smart-metrics.timer and the textfile collector directory."
+
+      - alert: SmartMetricsStale
+        expr: time() - shreyws_smart_collection_timestamp_seconds > 3600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART textfile metrics are stale"
+          description: "SMART metrics have not been updated for more than 1 hour. Check shreyws-smart-metrics.timer and journalctl -u shreyws-smart-metrics.service."
+
+      - alert: SmartMetricsCollectionFailed
+        expr: shreyws_smart_collection_success == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART collection failed for {{ $labels.role }} disk"
+          description: "smartctl did not return parseable data for {{ $labels.device }} ({{ $labels.role }}). This is not reported as healthy; inspect device access and smartctl output."
+
+      - alert: SmartDeviceMissing
+        expr: shreyws_smart_device_present == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Configured SMART disk is missing"
+          description: "{{ $labels.device }} ({{ $labels.role }}) is not present. Verify cabling, drive presence, and whether Linux device names changed."
+
+      - alert: SmartUnsupported
+        expr: shreyws_smart_supported == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMART is unsupported for {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) does not report SMART support. Disk health cannot be trusted from SMART metrics for this device."
+
+      - alert: SmartHealthFailed
+        expr: shreyws_smart_health_ok == 0 and shreyws_smart_collection_success == 1 and shreyws_smart_supported == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART overall health failed for {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports failed overall SMART health. Back up important data and inspect the disk immediately."
+
+      - alert: SmartAtaPendingSectors
+        expr: shreyws_smart_ata_pending_sectors > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART pending sectors detected on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports {{ $value }} pending sector(s). Pending sectors indicate unreadable or unstable media."
+
+      - alert: SmartAtaOfflineUncorrectableSectors
+        expr: shreyws_smart_ata_offline_uncorrectable_sectors > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMART offline uncorrectable sectors detected on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports {{ $value }} offline uncorrectable sector(s). A stable historical count is warning-level; increases are critical."
+
+      - alert: SmartAtaOfflineUncorrectableSectorsIncreasing
+        expr: increase(shreyws_smart_ata_offline_uncorrectable_sectors[24h]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART offline uncorrectable sectors are increasing on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) offline uncorrectable sector count increased in the last 24 hours. Plan disk replacement."
+
+      - alert: SmartAtaReallocatedSectorsPresent
+        expr: shreyws_smart_ata_reallocated_sectors > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMART reallocated sectors present on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports {{ $value }} reallocated sector(s). A stable historical count is warning-level; increases are critical."
+
+      - alert: SmartAtaReallocatedSectorsIncreasing
+        expr: increase(shreyws_smart_ata_reallocated_sectors[24h]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SMART reallocated sectors are increasing on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reallocated sector count increased in the last 24 hours. Plan disk replacement."
+
+      - alert: SmartAtaReportedUncorrectableErrors
+        expr: shreyws_smart_ata_reported_uncorrectable_errors > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMART reported uncorrectable errors on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports {{ $value }} uncorrectable error(s). Inspect smartctl logs and watch for increases."
+
+      - alert: SmartNvmeCriticalWarning
+        expr: shreyws_smart_nvme_critical_warning > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NVMe critical SMART warning on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports NVMe critical warning bitmask {{ $value }}. Inspect the device immediately."
+
+      - alert: SmartNvmeMediaErrors
+        expr: shreyws_smart_nvme_media_errors > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NVMe media errors present on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) reports {{ $value }} NVMe media/data integrity error(s). A stable historical count is warning-level; increases are critical."
+
+      - alert: SmartNvmeMediaErrorsIncreasing
+        expr: increase(shreyws_smart_nvme_media_errors[24h]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NVMe media errors are increasing on {{ $labels.role }} disk"
+          description: "{{ $labels.device }} ({{ $labels.role }}) NVMe media/data integrity errors increased in the last 24 hours. Plan disk replacement."
+
   - name: shreyws-host
     rules:
       - alert: HostHighCpuUsage

@@ -1,0 +1,20 @@
+[Unit]
+Description=Export ShreyWS SMART disk metrics for Prometheus
+Documentation=file:/srv/shreyws/infra/docs/alerting.md
+Wants=smartmontools.service
+After=smartmontools.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shreyws-smart-metrics
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/shreyws/services/node-exporter/textfile
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

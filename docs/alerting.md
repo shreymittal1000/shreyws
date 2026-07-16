@@ -154,9 +154,23 @@ Targets and host:
 
 SMART:
 
-- No Prometheus SMART alert is currently configured because no SMART metric series are exported to Prometheus.
-- `smartmontools.service` remains the active disk-health mechanism.
-- A future root-level smartd hook can export SMART status through Node Exporter's textfile collector without adding a privileged SMART exporter container.
+- `SmartMetricsMissing`: no SMART textfile metric exists for 20 minutes.
+- `SmartMetricsStale`: SMART metrics are older than 1 hour for 10 minutes.
+- `SmartMetricsCollectionFailed`: `smartctl` could not return parseable data for a configured disk for 10 minutes.
+- `SmartDeviceMissing`: a configured disk path is missing for 10 minutes.
+- `SmartUnsupported`: SMART support is not reported for a configured disk for 30 minutes.
+- `SmartHealthFailed`: overall SMART health fails for 5 minutes.
+- `SmartAtaPendingSectors`: ATA pending sectors are present for 10 minutes.
+- `SmartAtaOfflineUncorrectableSectors`: ATA offline uncorrectable sectors are present for 30 minutes.
+- `SmartAtaOfflineUncorrectableSectorsIncreasing`: ATA offline uncorrectable sectors increase within 24 hours.
+- `SmartAtaReallocatedSectorsPresent`: ATA reallocated sectors are present for 1 hour.
+- `SmartAtaReallocatedSectorsIncreasing`: ATA reallocated sectors increase within 24 hours.
+- `SmartAtaReportedUncorrectableErrors`: ATA reported uncorrectable errors are present for 30 minutes.
+- `SmartNvmeCriticalWarning`: an NVMe critical warning bit is set for 5 minutes.
+- `SmartNvmeMediaErrors`: NVMe media/data integrity errors are present for 30 minutes.
+- `SmartNvmeMediaErrorsIncreasing`: NVMe media/data integrity errors increase within 24 hours.
+
+The SMART timer runs every 15 minutes. The 1-hour stale threshold allows several missed timer runs before alerting while still catching a dead collector quickly.
 
 ## Grouping and Inhibition
 
@@ -216,17 +230,96 @@ The backup scripts themselves remain root-owned and were not weakened. The metri
 
 ## SMART Monitoring
 
-`smartmontools.service` remains the primary SMART monitoring mechanism.
+`smartmontools.service` remains enabled and active. Prometheus SMART metrics are exported separately by a root-run Node Exporter textfile collector:
 
-Current status:
+```text
+/usr/local/sbin/shreyws-smart-metrics
+```
+
+The source-controlled copy lives at:
+
+```text
+/srv/shreyws/infra/scripts/shreyws-smart-metrics
+```
+
+The systemd source-of-truth units live at:
+
+```text
+/srv/shreyws/infra/systemd/shreyws-smart-metrics.service
+/srv/shreyws/infra/systemd/shreyws-smart-metrics.timer
+```
+
+Deployed units run the collector as root every 15 minutes and write atomically to:
+
+```text
+/srv/shreyws/services/node-exporter/textfile/shreyws_smart.prom
+```
+
+Node Exporter already exposes that directory through:
+
+```text
+--collector.textfile.directory=/textfile
+```
+
+This keeps raw disk access out of Docker. The collector only runs read-only `smartctl -j -i -H -A` commands and does not start destructive SMART tests.
+
+Monitored disks:
+
+```text
+/dev/sdc  role=system  mounted at /
+/dev/sda  role=srv     mounted at /srv
+/dev/sdb  role=backup  mounted at /srv/shreyws/backups
+```
+
+Labels intentionally include only device path and role. Serial numbers are not exported.
+
+Metrics:
+
+```text
+shreyws_smart_collection_timestamp_seconds
+shreyws_smart_device_present{device,role}
+shreyws_smart_collection_success{device,role}
+shreyws_smart_supported{device,role}
+shreyws_smart_available{device,role}
+shreyws_smart_health_ok{device,role}
+shreyws_smart_ata_reallocated_sectors{device,role}
+shreyws_smart_ata_pending_sectors{device,role}
+shreyws_smart_ata_offline_uncorrectable_sectors{device,role}
+shreyws_smart_ata_reported_uncorrectable_errors{device,role}
+shreyws_smart_nvme_critical_warning{device,role}
+shreyws_smart_nvme_media_errors{device,role}
+shreyws_smart_temperature_celsius{device,role}
+```
+
+Unsupported, missing, and failed-query states are explicit. The collector does not report an unknown disk as healthy. If one disk cannot be queried, it still writes valid failure metrics for Prometheus and exits non-zero so systemd records the failure.
+
+Manual status checks:
 
 ```bash
 systemctl status smartmontools --no-pager
+systemctl status shreyws-smart-metrics.timer --no-pager
+systemctl status shreyws-smart-metrics.service --no-pager
 ```
 
-I tested `smartctl-exporter` with explicit `/dev/sda`, `/dev/sdb`, and `/dev/sdc` mappings. The container could not read SMART data even with explicit device mappings, SCSI generic devices, `SYS_RAWIO`, and privileged mode in this Docker environment. Because of that, this alerting rollout does not add a broken SMART exporter.
+Manual collector run:
 
-Recommended next improvement: add a root-level smartd hook under `/etc/smartmontools/run.d/` that writes a Node Exporter textfile metric when smartd reports a disk failure. That requires root access to `/etc/smartmontools` and should be implemented as a separate, focused change.
+```bash
+sudo /usr/local/sbin/shreyws-smart-metrics
+```
+
+Inspect exported metrics without exposing serial numbers:
+
+```bash
+grep '^shreyws_smart_' /srv/shreyws/services/node-exporter/textfile/shreyws_smart.prom
+curl -fsS http://127.0.0.1:9100/metrics | grep '^shreyws_smart_'
+```
+
+Troubleshooting:
+
+- If `SmartMetricsCollectionFailed` fires, run `sudo smartctl -j -i -H -A /dev/sdX` for the affected disk and inspect journald with `journalctl -u shreyws-smart-metrics.service`.
+- If `SmartDeviceMissing` fires after hardware changes, verify `lsblk` and update the device-role mapping in `scripts/shreyws-smart-metrics`.
+- If `SmartUnsupported` fires, verify whether the disk or USB/SATA bridge supports SMART and whether a `smartctl -d` device type is required.
+- If Node Exporter does not expose metrics, verify the textfile directory mount in `compose/monitoring/compose.yaml` and the file permissions on `shreyws_smart.prom`.
 
 ## Viewing Alerts
 
