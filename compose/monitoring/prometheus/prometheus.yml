@@ -39,3 +39,8 @@ scrape_configs:
   - job_name: "alloy"
     static_configs:
       - targets: ["alloy:12345"]
+
+  - job_name: "pilot"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["pilot:8000"]

@@ -1,0 +1,29 @@
+groups:
+  - name: shreyws-pilot
+    rules:
+      - alert: PilotTargetDown
+        expr: up{job="pilot"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS pilot service is unavailable"
+          description: "Prometheus cannot scrape the pilot service at {{ $labels.instance }} for 5 minutes. Check the shreyws-pilot container and Traefik route."
+
+      - alert: PilotMetricsMissing
+        expr: absent(shreyws_pilot_up)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS pilot metrics are missing"
+          description: "The pilot target is scrapeable but the expected shreyws_pilot_up metric is absent."
+
+      - alert: PilotSqliteMissing
+        expr: shreyws_pilot_sqlite_present == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS pilot SQLite database is missing"
+          description: "The pilot service reports that its SQLite state file is missing. Check /srv/shreyws/services/pilot and container logs."

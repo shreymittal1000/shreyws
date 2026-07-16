@@ -159,6 +159,18 @@ Dashboard file:
 
 ## Useful LogQL Queries
 
+Pilot logs:
+
+```logql
+{host="shreyws", service="pilot"}
+```
+
+Pilot errors:
+
+```logql
+{host="shreyws", service="pilot"} |~ "(?i)(error|exception|failed)"
+```
+
 All logs for a service:
 
 ```logql

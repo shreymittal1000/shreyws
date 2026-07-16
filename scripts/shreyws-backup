@@ -115,6 +115,7 @@ borg create \
   /srv/shreyws/services/alertmanager \
   /srv/shreyws/services/diun \
   /srv/shreyws/services/grafana \
+  /srv/shreyws/services/pilot \
   /srv/shreyws/services/prometheus \
   /var/lib/shreyws-backup \
   /var/lib/docker/volumes/grafana_grafana_data/_data

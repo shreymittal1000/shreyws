@@ -1,0 +1,50 @@
+services:
+  pilot:
+    image: python:3.13.5-alpine3.22
+    container_name: shreyws-pilot
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 128m
+    cpus: "0.25"
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - traefik_default
+    command: ["python", "/app/pilot.py"]
+    environment:
+      PILOT_BASE_PATH: /pilot
+      PILOT_DB_PATH: /data/pilot.db
+      PYTHONDONTWRITEBYTECODE: "1"
+    tmpfs:
+      - /tmp
+    volumes:
+      - /srv/shreyws/infra/compose/pilot/app/pilot.py:/app/pilot.py:ro
+      - /srv/shreyws/services/pilot:/data
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8000/-/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_default
+      - traefik.http.routers.pilot.tls=true
+      - traefik.http.routers.pilot.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/pilot`)
+      - traefik.http.routers.pilot.entrypoints=websecure
+      - traefik.http.routers.pilot.middlewares=authentik-forward-auth@docker
+      - traefik.http.services.pilot.loadbalancer.server.port=8000
+      - diun.enable=true
+
+networks:
+  traefik_default:
+    external: true

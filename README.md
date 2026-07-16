@@ -56,6 +56,7 @@ Server layout:
 * Homepage
 * BorgBackup
 * Container update notifications
+* Pilot workload
 
 ---
 
@@ -108,6 +109,8 @@ Operational documentation:
 * [Alerting](docs/alerting.md)
 * [Centralized logging](docs/logging.md)
 * [Security](docs/security.md)
+* [Architecture](docs/architecture.md)
+* [Pilot workload](docs/pilot-workload.md)
 
 ---
 

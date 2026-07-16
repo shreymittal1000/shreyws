@@ -482,3 +482,26 @@ Remaining recovery risks:
 - The backup disk, Borg repository key, and Borg passphrase must not be the only copies. Keep an offline copy of the exported repository key and passphrase.
 - The Authentik PostgreSQL dump is transaction-consistent at dump time, but restoring it still requires careful ordering: PostgreSQL first, then `pg_restore`, then Authentik server/worker/proxy.
 - Prometheus WAL/head chunks remain intentionally excluded.
+## Pilot Workload Restore
+
+The pilot workload persists SQLite state under:
+
+```text
+/srv/shreyws/services/pilot
+```
+
+Borg includes this path. To restore it safely:
+
+1. Stop the pilot container.
+2. Restore `/srv/shreyws/services/pilot` from the chosen archive into a temporary directory first.
+3. Verify ownership, permissions and SQLite validity.
+4. Move the restored directory into place only after confirming it is the intended version.
+5. Start the pilot container.
+
+Example validation:
+
+```bash
+sqlite3 /tmp/restore/srv/shreyws/services/pilot/pilot.db 'PRAGMA integrity_check;'
+```
+
+Do not restore over the live data path while the container is running.
