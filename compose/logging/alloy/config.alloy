@@ -1,0 +1,177 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+discovery.docker "shreyws" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "name"
+    values = ["shreyws-*"]
+  }
+}
+
+discovery.relabel "docker" {
+  targets = discovery.docker.shreyws.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+
+  rule {
+    target_label = "host"
+    replacement  = "shreyws"
+  }
+
+  rule {
+    target_label = "source"
+    replacement  = "docker"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.docker.output
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "docker_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=docker.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "docker.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "tailscaled_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=tailscaled.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "tailscaled.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "smartmontools_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=smartmontools.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "smartmontools.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "backup_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=shreyws-backup.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "shreyws-backup.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "backup_check_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=shreyws-backup-check.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "shreyws-backup-check.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "smart_metrics_service" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=shreyws-smart-metrics.service"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "shreyws-smart-metrics.service",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "systemd_manager" {
+  path       = "/var/log/journal"
+  matches    = "_SYSTEMD_UNIT=init.scope SYSLOG_IDENTIFIER=systemd"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "systemd-manager",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.source.journal "kernel" {
+  path       = "/var/log/journal"
+  matches    = "_TRANSPORT=kernel"
+  labels     = {
+    host         = "shreyws",
+    source       = "journal",
+    systemd_unit = "kernel",
+  }
+  forward_to = [loki.process.redact.receiver]
+}
+
+loki.process "redact" {
+  stage.replace {
+    expression = "(?i)(authorization:?[[:space:]]*(bearer|basic)?[[:space:]]+)[^[:space:]]+"
+    replace    = "${1}[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)(cookie:?[[:space:]]*)[^[:space:]]+"
+    replace    = "${1}[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)(https://api\\.telegram\\.org/bot)[^/[:space:]]+"
+    replace    = "${1}[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)((token|password|passwd|secret|passphrase|api[_-]?key)=)[^[:space:]&]+"
+    replace    = "${1}[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)((token|password|passwd|secret|passphrase|api[_-]?key)\":\")[^\"]+"
+    replace    = "${1}[REDACTED]"
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -89,6 +89,9 @@ The dump is a PostgreSQL custom-format archive generated from the live PostgreSQ
 | Alertmanager | Silences/notification state | `/srv/shreyws/services/alertmanager` | Borg file backup | Restore before starting Alertmanager |
 | Homepage | Configuration | `/srv/shreyws/infra/compose/homepage/config` | Borg file backup through `/srv/shreyws/infra` | Restore config before starting Homepage |
 | Diun | Update-notifier state | `/srv/shreyws/services/diun/diun.db` | Borg file backup, excluding `notifications.log` | Restore data before starting Diun |
+| Loki | Configuration, datasource, dashboard | `/srv/shreyws/infra/compose/logging`, Grafana provisioning files | Borg file backup through `/srv/shreyws/infra` | Restore config and recreate logging stack |
+| Loki log data | Searchable operational logs | `/srv/shreyws/services/loki` | Intentionally excluded | Recreated from new logs after service restart |
+| Alloy | Configuration and local state | `/srv/shreyws/infra/compose/logging`, `/srv/shreyws/services/alloy` | Config through Borg repo backup; state is disposable | Restore config and recreate Alloy |
 | Telegram alerts | Runtime credentials | `/srv/shreyws/secrets/alertmanager/telegram.env` | Borg file backup of `/srv/shreyws/secrets` | Restore with restrictive permissions before starting webhook |
 | Backup system | Env, repo key export, scripts, units | `/etc/shreyws-backup`, `/usr/local/sbin/shreyws-*`, repo `scripts/`, repo `systemd/` | Borg file backup and Git | Restore root-only env/key, install scripts/units |
 
@@ -101,6 +104,8 @@ The backup excludes regenerable or noisy data, including:
 - `/var/cache`, `/var/tmp`, `/var/log`
 - Docker image/build storage: `/var/lib/docker/overlay2`, `/var/lib/docker/image`, `/var/lib/docker/buildkit`
 - Prometheus WAL/head chunks
+- Loki bulk log data: `/srv/shreyws/services/loki`
+- Alloy runtime state: `/srv/shreyws/services/alloy`
 - Grafana generated CSV/PDF/PNG/plugin files
 - Diun notification log: `/srv/shreyws/services/diun/notifications.log`
 - Common user/project caches and build artifacts such as `.cache`, `node_modules`, `target`, `dist`, and `build`

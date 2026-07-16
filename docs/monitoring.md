@@ -48,6 +48,18 @@ Prometheus scrape jobs now include:
 - `node-exporter`
 - `cadvisor`
 - `traefik`
+- `loki`
+- `alloy`
+
+### Centralized Logs
+
+Grafana Loki and Grafana Alloy now provide searchable logs for ShreyWS Docker containers and selected journald units.
+
+See:
+
+```text
+/srv/shreyws/infra/docs/logging.md
+```
 
 ### Traefik Metrics
 

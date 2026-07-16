@@ -1,0 +1,59 @@
+services:
+  loki:
+    image: grafana/loki:3.5.1
+    container_name: shreyws-loki
+    restart: unless-stopped
+    command:
+      - "-config.file=/etc/loki/loki.yml"
+    networks:
+      - traefik_default
+    volumes:
+      - /srv/shreyws/infra/compose/logging/loki/loki.yml:/etc/loki/loki.yml:ro
+      - /srv/shreyws/services/loki:/loki
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://127.0.0.1:3100/ready || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    labels:
+      - diun.enable=true
+
+  alloy:
+    image: grafana/alloy:v1.9.1
+    container_name: shreyws-alloy
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - run
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - /etc/alloy/config.alloy
+    networks:
+      - traefik_default
+    volumes:
+      - /srv/shreyws/infra/compose/logging/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /srv/shreyws/services/alloy:/var/lib/alloy
+    depends_on:
+      - loki
+    healthcheck:
+      test:
+        - CMD
+        - alloy
+        - --version
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    labels:
+      - diun.enable=true
+
+networks:
+  traefik_default:
+    external: true

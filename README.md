@@ -106,6 +106,7 @@ Operational documentation:
 * [Homepage](docs/homepage.md)
 * [Container update management](docs/container-update-management.md)
 * [Alerting](docs/alerting.md)
+* [Centralized logging](docs/logging.md)
 
 ---
 

@@ -359,6 +359,8 @@ groups:
           or absent(container_last_seen{name="shreyws-diun"})
           or absent(container_last_seen{name="shreyws-grafana"})
           or absent(container_last_seen{name="shreyws-homepage"})
+          or absent(container_last_seen{name="shreyws-loki"})
+          or absent(container_last_seen{name="shreyws-alloy"})
           or absent(container_last_seen{name="shreyws-node-exporter"})
           or absent(container_last_seen{name="shreyws-prometheus"})
           or absent(container_last_seen{name="shreyws-telegram-alert-webhook"})
@@ -400,7 +402,7 @@ groups:
           description: "Prometheus cannot scrape Node Exporter for 5 minutes."
 
       - alert: PrometheusTargetDown
-        expr: up{job=~"prometheus|node-exporter|cadvisor|traefik|alertmanager"} == 0
+        expr: up{job=~"prometheus|node-exporter|cadvisor|traefik|alertmanager|loki|alloy"} == 0
         for: 5m
         labels:
           severity: warning
@@ -416,3 +418,39 @@ groups:
         annotations:
           summary: "Alertmanager is unavailable"
           description: "Prometheus cannot scrape Alertmanager at {{ $labels.instance }} for 5 minutes. Alerts may not be delivered until Alertmanager recovers."
+
+      - alert: LokiUnavailable
+        expr: up{job="loki"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Loki is unavailable"
+          description: "Prometheus cannot scrape Loki at {{ $labels.instance }} for 5 minutes. Centralized log search may be unavailable."
+
+      - alert: AlloyUnavailable
+        expr: up{job="alloy"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Grafana Alloy is unavailable"
+          description: "Prometheus cannot scrape Alloy at {{ $labels.instance }} for 5 minutes. Docker and journald logs may stop flowing to Loki."
+
+      - alert: LokiDiscardingLogEntries
+        expr: sum(rate(loki_discarded_samples_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is discarding log entries"
+          description: "Loki has discarded log samples for 15 minutes. Check ingestion limits, line size limits, and Loki logs."
+
+      - alert: AlloyDroppedLogEntries
+        expr: sum(rate(loki_write_dropped_entries_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Grafana Alloy is dropping log entries"
+          description: "Alloy reports dropped log lines for 15 minutes. Check Alloy processing stages and Loki write errors."

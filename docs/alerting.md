@@ -57,6 +57,13 @@ Telegram alert webhook:
 python:3.13.5-alpine3.22
 ```
 
+Logging targets:
+
+```text
+grafana/loki:3.5.1
+grafana/alloy:v1.9.1
+```
+
 All alerting services use fixed image tags.
 
 ## Rule Files
@@ -149,6 +156,10 @@ Targets and host:
 - `HostMetricsMissing`: Node Exporter scrape is down for 5 minutes.
 - `PrometheusTargetDown`: expected scrape target is down for 5 minutes.
 - `AlertmanagerUnavailable`: Alertmanager scrape is down for 5 minutes.
+- `LokiUnavailable`: Loki scrape is down for 5 minutes.
+- `AlloyUnavailable`: Alloy scrape is down for 5 minutes.
+- `LokiDiscardingLogEntries`: Loki discards log samples for 15 minutes.
+- `AlloyDroppedLogEntries`: Alloy drops log lines for 15 minutes.
 
 `PrometheusTargetDown` is a general warning for expected scrape targets. `AlertmanagerUnavailable` is critical because Alertmanager is required for JSONL and Telegram delivery.
 

@@ -16,6 +16,14 @@ services:
       - "--metrics.prometheus=true"
       - "--metrics.prometheus.entrypoint=metrics"
 
+      - "--accesslog=true"
+      - "--accesslog.format=json"
+      - "--accesslog.fields.defaultmode=keep"
+      - "--accesslog.fields.names.RequestPath=drop"
+      - "--accesslog.fields.names.RequestAddr=drop"
+      - "--accesslog.fields.names.ClientUsername=drop"
+      - "--accesslog.fields.headers.defaultmode=drop"
+
     ports:
       - "80:80"
       - "443:443"
