@@ -59,4 +59,4 @@ pilot_frontend:
 
 Existing infrastructure services remain on `traefik_default` until their dependencies can be migrated safely one group at a time.
 
-See [Agent platform architecture](agent-platform.md) for the future workload model. The deployed owner-agent pilot lives in `/srv/shreyws/infra/compose/owner-agent`, routes at `/agent/`, and uses its own `owner_agent_frontend` network shared only with Traefik and Prometheus.
+See [Agent platform architecture](agent-platform.md) for the future workload model. The owner-agent pilot in `/srv/shreyws/infra/compose/owner-agent` is retained as a decommissioned reference implementation; `/agent/` is no longer served. Future work is expected to provision isolated Hermes agent instances instead.

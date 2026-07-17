@@ -171,13 +171,13 @@ Pilot errors:
 {host="shreyws", service="pilot"} |~ "(?i)(error|exception|failed)"
 ```
 
-Owner-agent logs:
+Historical owner-agent logs:
 
 ```logql
 {host="shreyws", container="shreyws-owner-agent"}
 ```
 
-Owner-agent denials and errors:
+Historical owner-agent denials and errors:
 
 ```logql
 {host="shreyws", container="shreyws-owner-agent"} |~ "(?i)(denied|error|failed|timeout)"

@@ -1,8 +1,30 @@
-# Owner Agent Pilot
+# Owner Agent Pilot Reference
 
 Last updated: 2026-07-17
 
-The owner-agent pilot is a deliberately limited class-B workload. It validates the ShreyWS agent platform controls without deploying a general arbitrary-code execution platform.
+Status: decommissioned from live runtime on 2026-07-17.
+
+The owner-agent pilot was a deliberately limited class-B workload. It validated the ShreyWS agent platform controls without deploying a general arbitrary-code execution platform. It is retained in Git as a reference implementation only; `/agent/` is no longer served by the live platform.
+
+The future direction for ShreyWS is a multi-user Hermes provisioning platform with isolated agent instances for selected users.
+
+Final state archive:
+
+```text
+/srv/shreyws/agents/archive/owner-agent-pilot-state-20260717-114527.tar.gz
+```
+
+Archive manifest:
+
+```text
+/srv/shreyws/agents/archive/owner-agent-pilot-state-20260717-114527.manifest.txt
+```
+
+Archive SHA-256:
+
+```text
+4e00a4e7246b1709916272893f83e69b681b60245ebb548bc1b0a9631ca1848b
+```
 
 ## Use Case
 
@@ -23,17 +45,17 @@ It does not browse the web, execute commands, run Python supplied by a user, ins
 | Open WebUI or similar chat UI | Rejected for this pilot | Useful later for model interaction, but broader than the bounded notes/summarization goal and likely to introduce extra auth, plugin and model-management surface. |
 | Hermes/OpenClaw-style agent framework | Rejected for this pilot | No existing deployment was present, and full agent frameworks require more proof that dangerous tools can be disabled. |
 
-The current implementation uses `python:3.13.5-alpine3.22` and runs `/app/owner_agent.py` from a read-only bind mount.
+The reference implementation uses `python:3.13.5-alpine3.22` and runs `/app/owner_agent.py` from a read-only bind mount.
 
 ## Route And Authorization
 
-Public route:
+Historical route:
 
 ```text
 https://shreyws.tail1591fa.ts.net/agent/
 ```
 
-Traefik applies `authentik-forward-auth@docker`. The application also enforces owner authorization from the forwarded Authentik group header:
+When deployed, Traefik applied `authentik-forward-auth@docker`. The application also enforced owner authorization from the forwarded Authentik group header:
 
 ```text
 X-authentik-groups must include shreyws-owners
@@ -49,11 +71,11 @@ The owner-agent parses exact group names from the forwarded header and does not 
 
 The Authentik group `shreyws-owners` contains the owner account. This adds a second owner-only check on top of the existing domain-level forward-auth provider. It does not change the existing provider mode.
 
-Browser validation still requires an authenticated owner session. A non-owner authenticated user should receive HTTP 403 from the application after forward-auth succeeds.
+If redeployed for reference, browser validation requires an authenticated owner session. A non-owner authenticated user should receive HTTP 403 from the application after forward-auth succeeds.
 
 ## Model Backend And Secrets
 
-Current backend:
+Historical backend:
 
 ```text
 mock
@@ -101,7 +123,7 @@ Network:
 owner_agent_frontend
 ```
 
-Only `shreyws-owner-agent`, `shreyws-traefik` and `shreyws-prometheus` are attached to that network.
+When the pilot was live, only `shreyws-owner-agent`, `shreyws-traefik` and `shreyws-prometheus` were attached to that network. The live `owner_agent_frontend` network is removed during decommissioning.
 
 ## Security Controls
 
@@ -146,7 +168,7 @@ The service uses pattern-based request denial for obvious dangerous requests. Th
 
 ## Monitoring
 
-Prometheus job:
+Historical Prometheus job:
 
 ```text
 job="owner-agent"
@@ -175,9 +197,11 @@ Alerts:
 
 Global cAdvisor alerts still cover container restart/resource issues.
 
+The active Prometheus scrape job and owner-agent alert rules were removed during decommissioning.
+
 ## Logging
 
-Alloy ingests Docker logs for `shreyws-owner-agent` automatically because it discovers `shreyws-*` containers.
+When deployed, Alloy ingested Docker logs for `shreyws-owner-agent` automatically because it discovers `shreyws-*` containers.
 
 The service logs structured JSON metadata for requests and lifecycle events. It does not log full prompts, note contents, model outputs, Authorization headers, cookies or secrets by default.
 
@@ -193,13 +217,17 @@ Useful LogQL:
 
 ## Backup And Restore
 
-Borg includes:
+Borg no longer includes the live state path directly:
 
 ```text
 /srv/shreyws/services/agents/owner-pilot
 ```
 
-The SQLite database is small and suitable for normal file backup during this pilot. For a future heavier database or concurrent write workload, add application-level dump/backup hooks.
+The final state archive is stored under `/srv/shreyws/agents/archive`, which remains in Borg backup scope through the existing `/srv/shreyws/agents` include.
+
+The former live state directory `/srv/shreyws/services/agents/owner-pilot` and empty secret directory `/srv/shreyws/secrets/agents/owner-pilot` were removed after the archive was verified.
+
+The SQLite database was small and suitable for normal file backup during this pilot. For a future heavier database or concurrent write workload, add application-level dump/backup hooks.
 
 Targeted restore test:
 
@@ -209,15 +237,17 @@ sudo bash -c 'source /etc/shreyws-backup/borg.env; latest=$(borg list --last 1 -
 sudo sqlite3 /srv/shreyws/restore-tests/YYYYMMDD-HHMMSS/srv/shreyws/services/agents/owner-pilot/owner-agent.sqlite3 'PRAGMA integrity_check;'
 ```
 
-Do not restore over the live state directory while the container is running.
+Do not restore over a live state directory while the container is running.
 
 ## Operations
 
-Deploy or update:
+Redeploy for reference:
 
 ```bash
+docker network create owner_agent_frontend
+# Reattach Traefik and Prometheus to owner_agent_frontend if route/scrape testing is required.
 cd /srv/shreyws/infra/compose/owner-agent
-docker compose up -d
+docker compose --profile reference up -d
 ```
 
 Restart:
@@ -243,7 +273,7 @@ sudo sqlite3 /srv/shreyws/services/agents/owner-pilot/owner-agent.sqlite3 'PRAGM
 
 ## Update And Rollback
 
-Use the controlled update workflow:
+If redeployed, use the controlled update workflow:
 
 ```bash
 /srv/shreyws/infra/scripts/shreyws-container-update --dry-run owner-agent
@@ -254,27 +284,33 @@ Rollback to the current pinned image by restoring the previous Compose file from
 
 ```bash
 cd /srv/shreyws/infra/compose/owner-agent
-docker compose up -d
+docker compose --profile reference up -d
 ```
 
 Do not downgrade across incompatible state formats without a tested restore copy.
 
-## Removal
+## Decommissioning
 
-1. Stop the Compose project:
+1. Stop and remove the Compose project:
 
 ```bash
 cd /srv/shreyws/infra/compose/owner-agent
 docker compose down
 ```
 
-2. Preserve or deliberately remove state:
+2. Preserve or deliberately remove state only after an archive is verified:
 
 ```bash
-sudo tar -C /srv/shreyws/services/agents -cpf /root/owner-pilot-state.tar owner-pilot
+tar -C /srv/shreyws/services/agents -czf /srv/shreyws/agents/archive/owner-agent-pilot-state-YYYYMMDD-HHMMSS.tar.gz owner-pilot
 ```
 
 3. Remove monitoring scrape/rules and run `promtool check config`.
+
+4. Remove the dedicated Docker network after Traefik and Prometheus no longer attach to it:
+
+```bash
+docker network rm owner_agent_frontend
+```
 
 ## Residual Risks
 
@@ -285,7 +321,7 @@ sudo tar -C /srv/shreyws/services/agents -cpf /root/owner-pilot-state.tar owner-
 
 ## Go / No-Go
 
-Owner-only pilot use: GO, with mock backend and documented restrictions.
+Owner-only pilot use: complete; decommissioned after proving platform integration.
 
 Command execution: NO-GO until a separate sandbox and explicit allowlist are implemented and tested.
 

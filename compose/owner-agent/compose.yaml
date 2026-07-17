@@ -1,5 +1,9 @@
 services:
   owner-agent:
+    # Reference-only: the owner-agent pilot is decommissioned from live runtime.
+    # Use `docker compose --profile reference up -d` only for an intentional redeploy.
+    profiles:
+      - reference
     image: python:3.13.5-alpine3.22
     container_name: shreyws-owner-agent
     restart: unless-stopped
