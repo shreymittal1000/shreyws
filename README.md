@@ -113,6 +113,9 @@ Operational documentation:
 * [Architecture](docs/architecture.md)
 * [Pilot workload](docs/pilot-workload.md)
 * [Agent platform architecture](docs/agent-platform.md)
+* [Agent manifest](docs/agent-manifest.md)
+* [Agent lifecycle](docs/agent-lifecycle.md)
+* [Hermes runtime](docs/hermes-runtime.md)
 * [Owner-agent pilot](docs/owner-agent.md)
 
 ---

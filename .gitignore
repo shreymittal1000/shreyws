@@ -2,6 +2,7 @@ services/
 models/
 backups/
 logs/
+platform/instances/
 
 .env
 .env.*

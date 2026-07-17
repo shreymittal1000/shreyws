@@ -1,0 +1,40 @@
+apiVersion: shreyws.io/v1alpha1
+kind: AgentInstance
+
+metadata:
+  name: hermes-demo
+
+spec:
+  owner:
+    authentikUsername: shrey
+    authentikGroups:
+      - agent-hermes-demo
+
+  runtime:
+    type: hermes
+    version: placeholder
+    enabled: false
+
+  interfaces:
+    web:
+      enabled: true
+      path: /agents/hermes-demo/
+    telegram:
+      enabled: false
+
+  storage:
+    dataPath: /srv/shreyws/services/agents/hermes-demo
+    secretPath: /srv/shreyws/secrets/agents/hermes-demo
+    backup: true
+
+  resources:
+    cpus: 1.0
+    memory: 2G
+    pids: 256
+
+  security:
+    commandExecution: false
+    dockerSocket: false
+    hostNetwork: false
+    privileged: false
+    hostFilesystem: false

@@ -372,3 +372,108 @@ Go only if:
 - rollback is tested.
 
 No-go for friends/family or arbitrary-code workloads until stronger isolation and firewall/egress controls exist.
+
+## Agent Provisioning Platform Skeleton
+
+ShreyWS is being shaped into a small managed agent cloud. The platform primitive is an `AgentInstance`, not a VM and not a single global assistant.
+
+The first implementation is intentionally modest: a declarative manifest format plus a safe local command-line provisioner. It prepares ShreyWS for repeatable per-user Hermes instances without deploying a real Hermes workload yet.
+
+### Provisioning Goals
+
+- Give each user a separate agent instance.
+- Keep platform concerns separate from runtime concerns.
+- Make provisioning deterministic, reviewable and Git-friendly.
+- Default to owner-controlled, deny-by-default security.
+- Support web access through Traefik and Authentik.
+- Reserve Telegram integration for a later phase.
+- Keep generated state inspectable without Kubernetes, Nomad, Swarm or a database-backed control plane.
+
+### Provisioning Non-Goals
+
+- No production Hermes instance in this phase.
+- No family/friend accounts in this phase.
+- No command execution.
+- No Docker socket access for agent instances.
+- No web control plane yet.
+- No automatic updates.
+
+### Platform And Runtime Separation
+
+```text
+AgentInstance manifest
+  -> shreyws-agentctl
+     -> deterministic plan
+     -> generated instance directory
+     -> Compose reference
+     -> storage and secret directories
+     -> metadata and backup registration
+```
+
+The platform core owns lifecycle, routing intent, Authentik authorization mapping, storage, secret paths, resource limits, monitoring/logging metadata, backup metadata and instance metadata.
+
+A runtime adapter owns runtime-specific container configuration, image, environment variables, health checks, storage semantics, tools and UI behavior.
+
+### Provisioner Repository Layout
+
+```text
+platform/
+  agentctl/
+    agentctl.py
+  schemas/
+    agent-instance-v1alpha1.md
+  templates/
+    hermes/
+      README.md
+  examples/
+    hermes-demo.yaml
+  tests/
+    test_agentctl.py
+```
+
+Generated instance files are written under:
+
+```text
+platform/instances/<instance-name>
+```
+
+This generated directory is intentionally local runtime state and is ignored by Git.
+
+### Provisioner Security Defaults
+
+The validator requires:
+
+- no command execution,
+- no Docker socket,
+- no host networking,
+- no privileged mode,
+- no broad host filesystem access,
+- isolated data and secret paths,
+- explicit Authentik groups,
+- exact authorization group names,
+- explicit CPU, memory and PID limits,
+- no floating `latest` images for enabled runtimes.
+
+### Agent Access Model
+
+The intended user interface is web access through:
+
+```text
+https://shreyws.tail1591fa.ts.net/agents/<instance>/
+```
+
+Traefik and Authentik remain the platform entrypoint. Users should not need Docker, SSH, Tailscale, Compose or Hermes knowledge.
+
+Current access is still primarily through the Tailscale hostname. Exposing agent routes beyond the Tailnet requires a separate firewall, DNS, TLS and abuse-review pass.
+
+### Current Provisioning State
+
+The owner-agent pilot is decommissioned and retained only as a reference implementation. The next real runtime target is Hermes, but the Hermes adapter is placeholder-only until official deployment details are documented.
+
+Generic platform skeleton: GO.
+
+Non-production manifest planning and generation: GO.
+
+Real Hermes instance: NO-GO until the Hermes adapter contract is documented and reviewed.
+
+Family/friend access: NO-GO until one owner-only Hermes instance has been validated and stronger operational controls are in place.
