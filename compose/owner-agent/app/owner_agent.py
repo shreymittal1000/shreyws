@@ -124,9 +124,18 @@ def summarize_text(text: str) -> str:
     return f"Mock summary: {summary}"
 
 
+def parse_authentik_groups(groups_header: str | None) -> set[str]:
+    if not groups_header:
+        return set()
+    return {
+        group.strip()
+        for group in re.split(r"[|,]", groups_header)
+        if group.strip()
+    }
+
+
 def is_owner(headers: BaseHTTPRequestHandler.headers) -> bool:
-    groups = headers.get("X-authentik-groups", "")
-    return OWNER_GROUP in {g.strip() for g in groups.split(",")}
+    return OWNER_GROUP in parse_authentik_groups(headers.get("X-authentik-groups"))
 
 
 def html_page(title: str, body: str) -> bytes:

@@ -39,6 +39,14 @@ Traefik applies `authentik-forward-auth@docker`. The application also enforces o
 X-authentik-groups must include shreyws-owners
 ```
 
+Authentik sends group names as a pipe-separated header value, for example:
+
+```text
+authentik Admins|shreyws-owners
+```
+
+The owner-agent parses exact group names from the forwarded header and does not use substring matching.
+
 The Authentik group `shreyws-owners` contains the owner account. This adds a second owner-only check on top of the existing domain-level forward-auth provider. It does not change the existing provider mode.
 
 Browser validation still requires an authenticated owner session. A non-owner authenticated user should receive HTTP 403 from the application after forward-auth succeeds.
