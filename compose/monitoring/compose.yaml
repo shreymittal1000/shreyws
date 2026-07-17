@@ -6,6 +6,7 @@ services:
     networks:
       - traefik_default
       - pilot_frontend
+      - owner_agent_frontend
     volumes:
       - /srv/shreyws/infra/compose/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - /srv/shreyws/infra/compose/monitoring/prometheus/rules:/etc/prometheus/rules:ro
@@ -212,4 +213,6 @@ networks:
   traefik_default:
     external: true
   pilot_frontend:
+    external: true
+  owner_agent_frontend:
     external: true

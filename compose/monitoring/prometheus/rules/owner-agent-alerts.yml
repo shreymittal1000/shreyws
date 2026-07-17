@@ -1,0 +1,47 @@
+groups:
+  - name: shreyws-owner-agent
+    rules:
+      - alert: OwnerAgentUnavailable
+        expr: up{job="owner-agent"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Owner agent is unavailable"
+          description: "Prometheus cannot scrape the owner-agent metrics endpoint at {{ $labels.instance }} for 5 minutes. Check the shreyws-owner-agent container and owner_agent_frontend network."
+
+      - alert: OwnerAgentMetricsMissing
+        expr: absent(shreyws_owner_agent_up)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Owner agent metrics are missing"
+          description: "The owner-agent scrape target is reachable but the expected shreyws_owner_agent_up metric is absent."
+
+      - alert: OwnerAgentPersistentStateUnavailable
+        expr: shreyws_owner_agent_persistent_state_present == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Owner agent persistent state is unavailable"
+          description: "The owner-agent reports that its SQLite state file is missing. Check /srv/shreyws/services/agents/owner-pilot and container logs."
+
+      - alert: OwnerAgentHighFailureRate
+        expr: increase(shreyws_owner_agent_request_failures_total[15m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Owner agent request failures are elevated"
+          description: "The owner-agent reported more than 5 failed requests in 15 minutes. Check application logs and recent user actions."
+
+      - alert: OwnerAgentDeniedToolAttempts
+        expr: increase(shreyws_owner_agent_denied_tool_attempts_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Owner agent denied repeated dangerous tool attempts"
+          description: "The owner-agent denied more than 3 prohibited tool requests in 15 minutes. Review logs for prompt or tool abuse attempts."

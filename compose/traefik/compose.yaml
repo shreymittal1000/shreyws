@@ -34,6 +34,7 @@ services:
     networks:
       - traefik_default
       - pilot_frontend
+      - owner_agent_frontend
     labels:
       - diun.enable=true
 
@@ -41,4 +42,6 @@ networks:
   traefik_default:
     external: true
   pilot_frontend:
+    external: true
+  owner_agent_frontend:
     external: true

@@ -8,6 +8,8 @@ ShreyWS is a single-owner homelab server reached primarily through Tailscale and
 
 The current hardening target is conservative: reduce avoidable privilege and information exposure without changing Tailscale, Authentik, Traefik routing, storage layout, or remote-access behavior.
 
+The owner-agent pilot is treated as a class-B owner-trusted workload: no Docker socket, no privileged mode, no broad host mounts, no command execution, owner-only Authentik group authorization, dedicated state/secrets paths, and a dedicated frontend network.
+
 ## Exposure Model
 
 | Service | Host port | Bind address | Access path | Authentication layer | Intended audience | Risk |

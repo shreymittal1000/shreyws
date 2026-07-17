@@ -1,0 +1,60 @@
+services:
+  owner-agent:
+    image: python:3.13.5-alpine3.22
+    container_name: shreyws-owner-agent
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 512m
+    cpus: "0.50"
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - owner_agent_frontend
+    command: ["python", "/app/owner_agent.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      OWNER_AGENT_BASE_PATH: /agent
+      OWNER_AGENT_DATA_DIR: /data
+      OWNER_AGENT_REQUIRED_GROUP: shreyws-owners
+      OWNER_AGENT_MODEL_BACKEND: mock
+      OWNER_AGENT_MAX_BODY_BYTES: "65536"
+      OWNER_AGENT_MAX_TEXT_CHARS: "12000"
+      OWNER_AGENT_REQUEST_TIMEOUT_SECONDS: "15"
+      OWNER_AGENT_MAX_CONCURRENT_REQUESTS: "4"
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    volumes:
+      - /srv/shreyws/infra/compose/owner-agent/app:/app:ro
+      - /srv/shreyws/services/agents/owner-pilot:/data
+      - /srv/shreyws/secrets/agents/owner-pilot:/run/secrets/owner-agent:ro
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:8080/-/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=owner_agent_frontend
+      - traefik.http.routers.owner-agent.tls=true
+      - traefik.http.routers.owner-agent.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/agent`)
+      - traefik.http.routers.owner-agent.entrypoints=websecure
+      - traefik.http.routers.owner-agent.middlewares=authentik-forward-auth@docker
+      - traefik.http.services.owner-agent.loadbalancer.server.port=8080
+      - diun.enable=true
+      - shreyws.trust_class=owner
+      - shreyws.workload=owner-agent
+      - shreyws.owner=owner
+
+networks:
+  owner_agent_frontend:
+    external: true

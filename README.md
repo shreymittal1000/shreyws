@@ -57,6 +57,7 @@ Server layout:
 * BorgBackup
 * Container update notifications
 * Pilot workload
+* Owner-agent pilot
 
 ---
 
@@ -112,6 +113,7 @@ Operational documentation:
 * [Architecture](docs/architecture.md)
 * [Pilot workload](docs/pilot-workload.md)
 * [Agent platform architecture](docs/agent-platform.md)
+* [Owner-agent pilot](docs/owner-agent.md)
 
 ---
 

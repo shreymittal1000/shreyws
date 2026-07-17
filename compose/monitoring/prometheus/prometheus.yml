@@ -44,3 +44,8 @@ scrape_configs:
     metrics_path: "/metrics"
     static_configs:
       - targets: ["pilot:8000"]
+
+  - job_name: "owner-agent"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["owner-agent:8080"]

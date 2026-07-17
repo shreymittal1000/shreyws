@@ -167,3 +167,27 @@ Pilot-specific alerts live in:
 ```
 
 Alerts cover target availability, missing pilot metrics and missing SQLite persistence. cAdvisor continues to provide generic container health, restart and resource coverage.
+
+## Owner Agent Pilot
+
+The owner-agent pilot is scraped by Prometheus as:
+
+```text
+job="owner-agent"
+target="owner-agent:8080"
+```
+
+It exposes:
+
+```text
+/-/health
+/metrics
+```
+
+Owner-agent alerts live in:
+
+```text
+/srv/shreyws/infra/compose/monitoring/prometheus/rules/owner-agent-alerts.yml
+```
+
+Alerts cover target availability, missing metrics, missing SQLite state, elevated request failures and repeated denied dangerous-tool attempts.

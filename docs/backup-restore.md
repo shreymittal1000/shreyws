@@ -65,6 +65,7 @@ The backup includes:
 - `/srv/shreyws/services/alertmanager`
 - `/srv/shreyws/services/diun`
 - `/srv/shreyws/services/grafana`
+- `/srv/shreyws/services/agents/owner-pilot`
 - `/srv/shreyws/services/prometheus`
 - `/var/lib/shreyws-backup`
 - `/var/lib/docker/volumes/grafana_grafana_data/_data`
@@ -89,6 +90,7 @@ The dump is a PostgreSQL custom-format archive generated from the live PostgreSQ
 | Alertmanager | Silences/notification state | `/srv/shreyws/services/alertmanager` | Borg file backup | Restore before starting Alertmanager |
 | Homepage | Configuration | `/srv/shreyws/infra/compose/homepage/config` | Borg file backup through `/srv/shreyws/infra` | Restore config before starting Homepage |
 | Diun | Update-notifier state | `/srv/shreyws/services/diun/diun.db` | Borg file backup, excluding `notifications.log` | Restore data before starting Diun |
+| Owner agent pilot | SQLite notes/state | `/srv/shreyws/services/agents/owner-pilot` | Borg file backup | Restore state before starting owner-agent; validate SQLite with `PRAGMA integrity_check` |
 | Loki | Configuration, datasource, dashboard | `/srv/shreyws/infra/compose/logging`, Grafana provisioning files | Borg file backup through `/srv/shreyws/infra` | Restore config and recreate logging stack |
 | Loki log data | Searchable operational logs | `/srv/shreyws/services/loki` | Intentionally excluded | Recreated from new logs after service restart |
 | Alloy | Configuration and local state | `/srv/shreyws/infra/compose/logging`, `/srv/shreyws/services/alloy` | Config through Borg repo backup; state is disposable | Restore config and recreate Alloy |

@@ -4,6 +4,8 @@ Last updated: 2026-07-16
 
 This document prepares ShreyWS for a controlled owner-only agent pilot. It does not approve deployment of arbitrary code execution, browser automation, shell services, or guest workloads.
 
+The first owner-only pilot is documented in `docs/owner-agent.md`. It uses a purpose-built notes/summarization service with a mock model backend and no command execution.
+
 ## Goals
 
 - Define workload trust classes and security boundaries.
