@@ -35,5 +35,16 @@ Prometheus target.
 - Confirmed current Loki and Alloy ingestion is error-free after the one-time
   historical log replay.
 
-Docker was not restarted during this change. The new mount ordering is loaded
-and will govern the next Docker start or host reboot.
+## Package Upgrade And Reboot Verification
+
+- Upgraded all 86 pending packages with no additions or removals, including
+  Docker 29.7.2, containerd 2.3.3 and Docker Compose 5.4.0.
+- Verified no packages remain pending and `apt-get check` succeeds.
+- Performed a controlled reboot and reconnected through Tailscale.
+- Confirmed `/srv` became active at 20:03:48 and Docker became active five
+  seconds later at 20:03:53.
+- Confirmed all 17 infrastructure containers returned automatically with zero
+  restart counts and all seven Prometheus targets are healthy.
+- Confirmed Node Exporter sees the backup and SMART textfiles after reboot.
+- Confirmed current Alloy and Loki ingestion is error-free after their brief
+  startup replay.
