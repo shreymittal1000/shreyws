@@ -24,6 +24,39 @@ The deployed copies under `/usr/local/sbin` and `/etc/systemd/system` are the ru
 
 Backups run daily via systemd, not cron.
 
+## Automated Restore Drill
+
+Archive creation and repository checks do not by themselves prove that an
+operator can extract usable files. `shreyws-restore-drill.timer` therefore runs
+daily around 05:30 and performs a lightweight real extraction from the newest
+Borg archive.
+
+The drill extracts only two small, non-secret files into a root-only temporary
+directory:
+
+```text
+srv/shreyws/infra/docs/architecture.md
+srv/shreyws/infra/compose/traefik/compose.yaml
+```
+
+It verifies that both are non-empty and have their expected basic structure,
+then removes the extracted tree. It shares `/run/shreyws-backup.lock` with the
+backup job so repository reads never overlap a backup or verification. If the
+lock is busy, existing metrics are retained and the next daily run retries.
+
+Runtime files:
+
+```text
+/usr/local/sbin/shreyws-restore-drill
+/etc/systemd/system/shreyws-restore-drill.service
+/etc/systemd/system/shreyws-restore-drill.timer
+/var/log/shreyws-backup/restore-drill.log
+```
+
+Prometheus receives success, attempt time, last-success time, archive time, and
+duration through Node Exporter's textfile collector. The extraction directory
+does not persist after the job.
+
 Retention is enforced by `borg prune`:
 
 - 7 daily archives

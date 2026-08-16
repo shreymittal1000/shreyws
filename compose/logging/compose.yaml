@@ -43,9 +43,9 @@ services:
       - /etc/alloy/config.alloy
     networks:
       - traefik_default
+      - docker_socket_proxy
     volumes:
       - /srv/shreyws/infra/compose/logging/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/log/journal:/var/log/journal:ro
       - /run/log/journal:/run/log/journal:ro
       - /etc/machine-id:/etc/machine-id:ro
@@ -66,4 +66,6 @@ services:
 
 networks:
   traefik_default:
+    external: true
+  docker_socket_proxy:
     external: true

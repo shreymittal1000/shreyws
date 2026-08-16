@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "time": {
     "from": "now-6h",
@@ -1022,6 +1022,103 @@
           ]
         }
       }
+    },
+    {
+      "type": "text",
+      "title": "Reliability",
+      "gridPos": {"x": 0, "y": 60, "w": 24, "h": 1},
+      "options": {"mode": "markdown", "content": "## Reliability and Recovery"}
+    },
+    {
+      "type": "stat",
+      "title": "Failed systemd Services",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "shreyws_systemd_failed_services", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "title": "TLS Days Remaining",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 4, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "shreyws_tls_certificate_days_remaining", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "d", "decimals": 1, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 7}, {"color": "green", "value": 30}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "title": "TLS Trusted",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 8, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "min(shreyws_tls_certificate_chain_trusted) * min(shreyws_tls_certificate_hostname_match)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "title": "Configuration Drift",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "shreyws_config_drift_files", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "title": "Restore Drill",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 16, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "shreyws_restore_drill_success", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "title": "Swap Used",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 20, "y": 61, "w": 4, "h": 4},
+      "targets": [{"expr": "100 * (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 1, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 80}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "bargauge",
+      "title": "SMART Degraded Sectors",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 65, "w": 12, "h": 6},
+      "targets": [
+        {"expr": "shreyws_smart_ata_reallocated_sectors", "legendFormat": "{{role}} reallocated", "refId": "A"},
+        {"expr": "shreyws_smart_ata_pending_sectors", "legendFormat": "{{role}} pending", "refId": "B"},
+        {"expr": "shreyws_smart_ata_offline_uncorrectable_sectors", "legendFormat": "{{role}} uncorrectable", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"displayMode": "basic", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "type": "stat",
+      "title": "Active Alerts",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 65, "w": 6, "h": 6},
+      "targets": [{"expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Restore Drill Duration",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 18, "y": 65, "w": 6, "h": 6},
+      "targets": [{"expr": "shreyws_restore_drill_duration_seconds", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "text",
+      "title": "Independent Outage Monitor",
+      "gridPos": {"x": 0, "y": 71, "w": 24, "h": 3},
+      "options": {"mode": "markdown", "content": "The independent Tailscale/HTTPS outage check runs on `sm-gram14`. Its status is intentionally not pushed to ShreyWS, so it can still report when this server and its monitoring stack are unavailable together."}
     }
   ]
 }

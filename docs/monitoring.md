@@ -120,8 +120,31 @@ Sections:
 - Docker
 - Traefik
 - Backups
+- Reliability and Recovery
 
 The dashboard is intentionally compact and uses only metrics available from the current stack.
+
+The reliability section includes failed systemd services, trusted TLS and
+certificate lifetime, source/runtime configuration drift, restore-drill status
+and duration, swap usage, active alerts, and SMART degraded-sector counts. The
+independent workstation outage monitor is described rather than represented by
+a server-side metric: pushing its status into ShreyWS would undermine its role
+as an external observer when the server is unreachable.
+
+## Configuration Drift
+
+`shreyws-config-drift-metrics.timer` compares source-controlled host scripts,
+systemd units, and the Docker mount-order drop-in with their deployed copies
+every 15 minutes. It checks file content and modes and exports only paths and
+drift reasons; no secret files are inspected.
+
+The runtime collector is:
+
+```text
+/usr/local/sbin/shreyws-config-drift-metrics
+```
+
+Source-controlled copies live under `scripts/` and `systemd/`.
 
 ## Remaining Limitations
 

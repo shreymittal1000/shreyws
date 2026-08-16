@@ -88,7 +88,8 @@ Local inspection cannot prove whether the home router forwards IPv4 ports or fil
 
 | Service | Key access | Action | Residual risk |
 | --- | --- | --- | --- |
-| Traefik | Docker socket; published 80/443 | No change | Docker socket discovery remains high-impact if compromised. |
+| Docker socket proxy | Docker socket; internal-only API | Read-only filesystem, dropped capabilities, no published port, `POST=0`, and only required read API sections enabled | Compromise can still expose container/image/network metadata; the proxy is isolated on a dedicated network. |
+| Traefik | Restricted Docker API; published 80/443 | Replaced direct socket mount with internal read-only proxy | Can read container and network discovery metadata but cannot invoke write APIs. |
 | Authentik server/worker/proxy | Auth service and outpost | No change | Auth stack is core access path; avoid architecture changes without a focused Authentik maintenance window. |
 | Authentik PostgreSQL | Internal database volume | No change | Isolated on Authentik internal network; logical dumps are backed up. |
 | Grafana | Persistent data, provisioning | No change | Uses floating image tag; protected by Authentik. |
@@ -100,8 +101,21 @@ Local inspection cannot prove whether the home router forwards IPv4 ports or fil
 | cAdvisor | Broad read-only host/Docker mounts | No change | Required for container metrics; high metadata exposure if compromised. |
 | Node Exporter | Host rootfs read-only, host PID | No change | Required for host metrics. |
 | Loki | Persistent log store | Added dropped capabilities, `no-new-privileges`, PID limit | Internal unauthenticated service reachable from Docker network. |
-| Alloy | Docker socket, journald reads, Loki writes | Added dropped capabilities, `no-new-privileges`, PID limit | Docker socket and journal access remain privileged discovery paths. |
-| Diun | Docker socket, local data | Added dropped capabilities, `no-new-privileges`, PID limit | Docker socket read access remains root-equivalent API exposure. |
+| Alloy | Restricted Docker API, journald reads, Loki writes | Replaced direct socket mount with internal read-only proxy; retained dropped capabilities, `no-new-privileges`, and PID limit | Journal access and Docker log/metadata reads remain sensitive by design. |
+| Diun | Restricted Docker API, local data | Replaced direct socket mount with internal read-only proxy; retained dropped capabilities, `no-new-privileges`, and PID limit | Can read labeled container/image metadata but cannot invoke Docker write APIs. |
+
+## Docker Socket Proxy
+
+Traefik, Diun, and Alloy use `shreyws-socket-proxy` on the internal-only
+`docker_socket_proxy` network. The proxy exposes no host port and denies POST,
+container lifecycle operations, exec, builds, secrets, services, volumes, and
+other unused API groups. Direct `/var/run/docker.sock` mounts were removed from
+those clients.
+
+cAdvisor retains its broad read-only host integration because it does not offer
+an equivalent supported remote-Docker configuration for the metrics used here.
+The host-run backup script also invokes Docker directly for the Authentik
+database dump; it is not a container socket consumer.
 
 ## Secrets Assessment
 
@@ -199,7 +213,6 @@ sudo apt purge unattended-upgrades
 - Activate a tested nftables firewall policy with physical fallback available.
 - Restrict SSH/RDP bind/access to Tailscale and trusted LAN if operationally acceptable.
 - Continue reviewing image updates through Diun and the controlled update workflow. The previously floating Grafana, Homepage and cAdvisor images were pinned to their already-running versions on 2026-07-16.
-- Evaluate a Docker socket proxy using measured API needs for each consumer.
 - Split Docker networks further only after mapping required service-to-service flows.
 - Decide whether Avahi/GNOME Remote Desktop listeners are still needed.
 - Add security-focused LogQL panels for SSH/RDP/Auth failure trends without alerting on every failed login.

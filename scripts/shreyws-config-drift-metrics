@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Compare source-controlled host files with their deployed runtime copies."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import stat
+import time
+
+
+REPOSITORY = Path("/srv/shreyws/infra")
+OUTPUT = Path("/srv/shreyws/services/node-exporter/textfile/shreyws_config_drift.prom")
+
+MAPPINGS = {
+    "scripts/shreyws-backup": "/usr/local/sbin/shreyws-backup",
+    "scripts/shreyws-backup-check": "/usr/local/sbin/shreyws-backup-check",
+    "scripts/shreyws-smart-metrics": "/usr/local/sbin/shreyws-smart-metrics",
+    "scripts/shreyws-systemd-metrics": "/usr/local/sbin/shreyws-systemd-metrics",
+    "scripts/shreyws-tls-metrics": "/usr/local/sbin/shreyws-tls-metrics",
+    "scripts/shreyws-tailscale-cert-renew": "/usr/local/sbin/shreyws-tailscale-cert-renew",
+    "scripts/shreyws-config-drift-metrics": "/usr/local/sbin/shreyws-config-drift-metrics",
+    "scripts/shreyws-restore-drill": "/usr/local/sbin/shreyws-restore-drill",
+    "systemd/shreyws-backup.service": "/etc/systemd/system/shreyws-backup.service",
+    "systemd/shreyws-backup.timer": "/etc/systemd/system/shreyws-backup.timer",
+    "systemd/shreyws-backup-check.service": "/etc/systemd/system/shreyws-backup-check.service",
+    "systemd/shreyws-backup-check.timer": "/etc/systemd/system/shreyws-backup-check.timer",
+    "systemd/shreyws-smart-metrics.service": "/etc/systemd/system/shreyws-smart-metrics.service",
+    "systemd/shreyws-smart-metrics.timer": "/etc/systemd/system/shreyws-smart-metrics.timer",
+    "systemd/shreyws-systemd-metrics.service": "/etc/systemd/system/shreyws-systemd-metrics.service",
+    "systemd/shreyws-systemd-metrics.timer": "/etc/systemd/system/shreyws-systemd-metrics.timer",
+    "systemd/shreyws-tls-metrics.service": "/etc/systemd/system/shreyws-tls-metrics.service",
+    "systemd/shreyws-tls-metrics.timer": "/etc/systemd/system/shreyws-tls-metrics.timer",
+    "systemd/shreyws-tailscale-cert-renew.service": "/etc/systemd/system/shreyws-tailscale-cert-renew.service",
+    "systemd/shreyws-tailscale-cert-renew.timer": "/etc/systemd/system/shreyws-tailscale-cert-renew.timer",
+    "systemd/shreyws-config-drift-metrics.service": "/etc/systemd/system/shreyws-config-drift-metrics.service",
+    "systemd/shreyws-config-drift-metrics.timer": "/etc/systemd/system/shreyws-config-drift-metrics.timer",
+    "systemd/shreyws-restore-drill.service": "/etc/systemd/system/shreyws-restore-drill.service",
+    "systemd/shreyws-restore-drill.timer": "/etc/systemd/system/shreyws-restore-drill.timer",
+    "systemd/docker.service.d/10-require-srv.conf": "/etc/systemd/system/docker.service.d/10-require-srv.conf",
+}
+
+# Root-only backup and disk collectors are deliberately stricter at runtime
+# than their source copies in the working tree.
+EXPECTED_RUNTIME_MODES = {
+    "/usr/local/sbin/shreyws-backup": 0o750,
+    "/usr/local/sbin/shreyws-backup-check": 0o750,
+    "/usr/local/sbin/shreyws-smart-metrics": 0o750,
+}
+
+
+def digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+def escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def main() -> int:
+    drift: list[tuple[str, str, str]] = []
+    for relative_source, runtime_name in MAPPINGS.items():
+        source = REPOSITORY / relative_source
+        runtime = Path(runtime_name)
+        if not source.is_file():
+            drift.append((relative_source, runtime_name, "source_missing"))
+        elif not runtime.is_file():
+            drift.append((relative_source, runtime_name, "runtime_missing"))
+        elif digest(source) != digest(runtime):
+            drift.append((relative_source, runtime_name, "content"))
+        elif EXPECTED_RUNTIME_MODES.get(
+            runtime_name, stat.S_IMODE(source.stat().st_mode)
+        ) != stat.S_IMODE(runtime.stat().st_mode):
+            drift.append((relative_source, runtime_name, "mode"))
+
+    now = int(time.time())
+    lines = [
+        "# HELP shreyws_config_drift_files Number of deployed host files that differ from Git source.",
+        "# TYPE shreyws_config_drift_files gauge",
+        f"shreyws_config_drift_files {len(drift)}",
+        "# HELP shreyws_config_drift File-level source/runtime drift state.",
+        "# TYPE shreyws_config_drift gauge",
+    ]
+    for source, runtime, reason in drift:
+        lines.append(
+            f'shreyws_config_drift{{source="{escape(source)}",runtime="{escape(runtime)}",reason="{reason}"}} 1'
+        )
+    lines.extend(
+        [
+            "# HELP shreyws_config_drift_last_success_timestamp_seconds Unix timestamp of the last successful drift scan.",
+            "# TYPE shreyws_config_drift_last_success_timestamp_seconds gauge",
+            f"shreyws_config_drift_last_success_timestamp_seconds {now}",
+        ]
+    )
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = OUTPUT.with_name(f".{OUTPUT.name}.{os.getpid()}")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, OUTPUT)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

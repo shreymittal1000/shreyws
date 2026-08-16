@@ -4,6 +4,7 @@ watch:
 
 providers:
   docker:
+    endpoint: "tcp://socket-proxy:2375"
     watchByDefault: false
 
 notif:

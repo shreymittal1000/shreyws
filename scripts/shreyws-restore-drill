@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+CONFIG=/etc/shreyws-backup/borg.env
+LOG_DIR=/var/log/shreyws-backup
+LOG_FILE=${LOG_DIR}/restore-drill.log
+LOCK_FILE=/run/shreyws-backup.lock
+RESTORE_DIR=/var/lib/shreyws-backup/restore-drill
+METRICS_DIR=/srv/shreyws/services/node-exporter/textfile
+METRICS_FILE=${METRICS_DIR}/shreyws_restore_drill.prom
+STARTED_AT=$(date +%s)
+COMPLETED=0
+ARCHIVE_TIMESTAMP=0
+
+mkdir -p "$LOG_DIR" "$METRICS_DIR"
+exec >>"$LOG_FILE" 2>&1
+
+log() {
+  printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
+}
+
+cleanup_restore() {
+  rm -rf "$RESTORE_DIR"
+}
+
+write_metrics() {
+  rc=$?
+  now=$(date +%s)
+  duration=$((now - STARTED_AT))
+  success=0
+  last_success=0
+  if [[ -r "$METRICS_FILE" ]]; then
+    last_success=$(awk '$1 == "shreyws_restore_drill_last_success_timestamp_seconds" {print int($2)}' "$METRICS_FILE" | tail -1)
+    last_success=${last_success:-0}
+  fi
+  if [[ "$rc" -eq 0 && "$COMPLETED" -eq 1 ]]; then
+    success=1
+    last_success=$now
+  fi
+  temporary="${METRICS_FILE}.$$"
+  {
+    echo '# HELP shreyws_restore_drill_success Whether the latest Borg extraction drill succeeded.'
+    echo '# TYPE shreyws_restore_drill_success gauge'
+    echo "shreyws_restore_drill_success $success"
+    echo '# HELP shreyws_restore_drill_last_attempt_timestamp_seconds Unix timestamp of the latest extraction drill attempt.'
+    echo '# TYPE shreyws_restore_drill_last_attempt_timestamp_seconds gauge'
+    echo "shreyws_restore_drill_last_attempt_timestamp_seconds $now"
+    echo '# HELP shreyws_restore_drill_last_success_timestamp_seconds Unix timestamp of the latest successful extraction drill.'
+    echo '# TYPE shreyws_restore_drill_last_success_timestamp_seconds gauge'
+    echo "shreyws_restore_drill_last_success_timestamp_seconds $last_success"
+    echo '# HELP shreyws_restore_drill_duration_seconds Duration of the latest extraction drill.'
+    echo '# TYPE shreyws_restore_drill_duration_seconds gauge'
+    echo "shreyws_restore_drill_duration_seconds $duration"
+    echo '# HELP shreyws_restore_drill_archive_timestamp_seconds Timestamp encoded in the archive exercised by the latest drill.'
+    echo '# TYPE shreyws_restore_drill_archive_timestamp_seconds gauge'
+    echo "shreyws_restore_drill_archive_timestamp_seconds $ARCHIVE_TIMESTAMP"
+  } >"$temporary"
+  chmod 0644 "$temporary"
+  mv -f "$temporary" "$METRICS_FILE"
+  cleanup_restore
+  return "$rc"
+}
+trap write_metrics EXIT
+
+if [[ ! -r "$CONFIG" ]]; then
+  log "Missing readable config: $CONFIG"
+  exit 1
+fi
+
+source "$CONFIG"
+export BORG_REPO BORG_PASSPHRASE
+export BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=no
+export BORG_RELOCATED_REPO_ACCESS_IS_OK=no
+
+if ! mountpoint -q /srv/shreyws/backups; then
+  log "Backup disk is not mounted at /srv/shreyws/backups."
+  exit 1
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  log "Backup or verification is already running; leaving existing drill metrics unchanged."
+  trap - EXIT
+  exit 0
+fi
+
+archive=$(borg list --short --last 1)
+if [[ -z "$archive" ]]; then
+  log "No Borg archive is available for a restore drill."
+  exit 1
+fi
+if [[ "$archive" =~ ([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})$ ]]; then
+  ARCHIVE_TIMESTAMP=$(date -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s)
+fi
+
+log "Extracting non-secret verification files from ${archive}"
+cleanup_restore
+install -d -m 0700 "$RESTORE_DIR"
+cd "$RESTORE_DIR"
+borg extract --list "::${archive}" \
+  srv/shreyws/infra/docs/architecture.md \
+  srv/shreyws/infra/compose/traefik/compose.yaml
+
+test -s "$RESTORE_DIR/srv/shreyws/infra/docs/architecture.md"
+test -s "$RESTORE_DIR/srv/shreyws/infra/compose/traefik/compose.yaml"
+grep -q '^#' "$RESTORE_DIR/srv/shreyws/infra/docs/architecture.md"
+grep -q '^services:' "$RESTORE_DIR/srv/shreyws/infra/compose/traefik/compose.yaml"
+
+COMPLETED=1
+log "Restore drill completed successfully from ${archive}"

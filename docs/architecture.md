@@ -1,6 +1,6 @@
 # ShreyWS Architecture
 
-Last updated: 2026-07-16
+Last updated: 2026-08-16
 
 ShreyWS is organized around small Docker Compose projects under:
 
@@ -33,6 +33,9 @@ Core operational systems:
 - Loki and Alloy provide centralized logging.
 - BorgBackup stores encrypted backups and tested restore data.
 - Diun reports container image updates without applying them automatically.
+- A dedicated internal Docker socket proxy gives Traefik, Diun, and Alloy only
+  the read API groups they require; it exposes no host port and permits no POST
+  operations.
 
 The pilot workload follows the same architecture as future internal services while avoiding privileged access and unnecessary dependencies.
 
@@ -58,5 +61,19 @@ pilot_frontend:
 ```
 
 Existing infrastructure services remain on `traefik_default` until their dependencies can be migrated safely one group at a time.
+
+Docker API discovery uses a separate external bridge:
+
+```text
+docker_socket_proxy:
+  shreyws-socket-proxy
+  shreyws-traefik
+  shreyws-diun
+  shreyws-alloy
+```
+
+Traefik, Diun, and Alloy no longer mount `/var/run/docker.sock`. cAdvisor
+retains its existing read-only host runtime mounts because its metrics
+integration is different from the three remote API clients.
 
 See [Agent platform architecture](agent-platform.md) for the future workload model. The owner-agent pilot in `/srv/shreyws/infra/compose/owner-agent` is retained as a decommissioned reference implementation; `/agent/` is no longer served. Future work is expected to provision isolated Hermes agent instances instead.

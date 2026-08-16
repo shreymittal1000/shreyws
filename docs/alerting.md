@@ -180,6 +180,12 @@ Targets and host:
 - `TlsCertificateUntrusted`: the served certificate chain is untrusted for 15 minutes.
 - `TlsCertificateExpiringSoon`: the served HTTPS certificate has fewer than 30 days remaining.
 - `TlsCertificateExpiryCritical`: the served HTTPS certificate has fewer than 7 days remaining.
+- `ConfigDriftMetricsMissing`: configuration drift metrics are absent for 30 minutes.
+- `ConfigDriftMetricsStale`: the drift scan is older than one hour.
+- `ConfigurationDriftDetected`: deployed host files differ from Git for 15 minutes.
+- `RestoreDrillMetricsMissing`: restore-drill metrics are absent for 36 hours.
+- `RestoreDrillFailed`: the latest selected-file extraction failed.
+- `RestoreDrillTooOld`: no successful extraction drill completed for 36 hours.
 
 `PrometheusTargetDown` is a general warning for expected scrape targets. `AlertmanagerUnavailable` is critical because Alertmanager is required for JSONL and Telegram delivery.
 

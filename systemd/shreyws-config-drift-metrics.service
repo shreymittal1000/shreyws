@@ -1,0 +1,18 @@
+[Unit]
+Description=Export ShreyWS source/runtime configuration drift metrics
+Documentation=file:/srv/shreyws/infra/docs/monitoring.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shreyws-config-drift-metrics
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/shreyws/services/node-exporter/textfile
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

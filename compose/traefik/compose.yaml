@@ -9,6 +9,7 @@ services:
 
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.endpoint=tcp://socket-proxy:2375"
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
 
@@ -31,7 +32,6 @@ services:
       - "443:443"
 
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /srv/shreyws/infra/compose/traefik/dynamic:/etc/traefik/dynamic:ro
       - /srv/shreyws/secrets/traefik/tls:/certs:ro
 
@@ -50,6 +50,7 @@ services:
     networks:
       - traefik_default
       - pilot_frontend
+      - docker_socket_proxy
     labels:
       - diun.enable=true
 
@@ -57,4 +58,6 @@ networks:
   traefik_default:
     external: true
   pilot_frontend:
+    external: true
+  docker_socket_proxy:
     external: true

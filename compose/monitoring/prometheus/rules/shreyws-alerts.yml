@@ -363,6 +363,7 @@ groups:
           or absent(container_last_seen{name="shreyws-alloy"})
           or absent(container_last_seen{name="shreyws-node-exporter"})
           or absent(container_last_seen{name="shreyws-prometheus"})
+          or absent(container_last_seen{name="shreyws-socket-proxy"})
           or absent(container_last_seen{name="shreyws-telegram-alert-webhook"})
           or absent(container_last_seen{name="shreyws-traefik"})
         for: 5m
@@ -457,6 +458,60 @@ groups:
 
   - name: shreyws-host-integrations
     rules:
+      - alert: ConfigDriftMetricsMissing
+        expr: absent(shreyws_config_drift_files)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Configuration drift metrics are missing"
+          description: "Node Exporter is not exposing configuration drift metrics. Check shreyws-config-drift-metrics.timer."
+
+      - alert: ConfigDriftMetricsStale
+        expr: time() - shreyws_config_drift_last_success_timestamp_seconds > 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Configuration drift metrics are stale"
+          description: "The source/runtime drift collector has not completed for more than one hour."
+
+      - alert: ConfigurationDriftDetected
+        expr: shreyws_config_drift_files > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Deployed host configuration differs from Git"
+          description: "{{ $value }} deployed host file(s) differ from the ShreyWS infra repository."
+
+      - alert: RestoreDrillMetricsMissing
+        expr: absent(shreyws_restore_drill_success)
+        for: 36h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Restore drill metrics are missing"
+          description: "No Borg restore-drill metric has been exported for 36 hours. Check shreyws-restore-drill.timer."
+
+      - alert: RestoreDrillFailed
+        expr: shreyws_restore_drill_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Borg restore drill failed"
+          description: "The latest selected-file extraction from the Borg repository did not validate successfully."
+
+      - alert: RestoreDrillTooOld
+        expr: time() - shreyws_restore_drill_last_success_timestamp_seconds > 129600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Borg restore drill is too old"
+          description: "No successful selected-file extraction has completed for more than 36 hours."
+
       - alert: SystemdMetricsMissing
         expr: absent(shreyws_systemd_failed_services)
         for: 15m

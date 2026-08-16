@@ -4,7 +4,7 @@ logging {
 }
 
 discovery.docker "shreyws" {
-  host = "unix:///var/run/docker.sock"
+  host = "tcp://socket-proxy:2375"
 
   filter {
     name   = "name"
@@ -48,7 +48,7 @@ discovery.relabel "docker" {
 }
 
 loki.source.docker "containers" {
-  host       = "unix:///var/run/docker.sock"
+  host       = "tcp://socket-proxy:2375"
   targets    = discovery.relabel.docker.output
   forward_to = [loki.process.redact.receiver]
 }
