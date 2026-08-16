@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Export failed systemd service state for Node Exporter's textfile collector."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+import time
+
+
+OUTPUT = Path(os.environ.get("OUTPUT_FILE", "/srv/shreyws/services/node-exporter/textfile/shreyws_systemd.prom"))
+
+
+def prometheus_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def main() -> int:
+    result = subprocess.run(
+        ["systemctl", "--failed", "--type=service", "--no-legend", "--plain"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    failed_units = []
+    for line in result.stdout.splitlines():
+        fields = line.lstrip("● ").split()
+        if fields:
+            failed_units.append(fields[0])
+
+    now = int(time.time())
+    lines = [
+        "# HELP shreyws_systemd_failed_services Number of failed host systemd services.",
+        "# TYPE shreyws_systemd_failed_services gauge",
+        f"shreyws_systemd_failed_services {len(failed_units)}",
+        "# HELP shreyws_systemd_service_failed Failed state for a host systemd service.",
+        "# TYPE shreyws_systemd_service_failed gauge",
+    ]
+    lines.extend(
+        f'shreyws_systemd_service_failed{{unit="{prometheus_escape(unit)}"}} 1'
+        for unit in sorted(failed_units)
+    )
+    lines.extend(
+        [
+            "# HELP shreyws_systemd_metrics_last_success_timestamp_seconds Unix timestamp of the last successful collection.",
+            "# TYPE shreyws_systemd_metrics_last_success_timestamp_seconds gauge",
+            f"shreyws_systemd_metrics_last_success_timestamp_seconds {now}",
+        ]
+    )
+
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = OUTPUT.with_name(f".{OUTPUT.name}.{os.getpid()}")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, OUTPUT)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

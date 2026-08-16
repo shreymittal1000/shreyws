@@ -29,8 +29,8 @@ Existing metric coverage was strong for host and container basics:
 - Backup status was only available in Borg logs, not Prometheus.
 - Grafana had no provisioned datasource or system overview dashboard in the repo.
 - SMART disk health was not available through Prometheus. It is now exported by the root-run `shreyws-smart-metrics` textfile collector.
-- Failed systemd services are not exported. The current containerized Node Exporter does not have systemd/DBus access.
-- TLS certificate expiry is not currently exported by Traefik metrics.
+- Failed systemd services are exported by a root-run textfile collector every five minutes without exposing host DBus to the Node Exporter container.
+- The certificate served on the HTTPS entrypoint is inspected hourly by a root-run textfile collector. Expiry, hostname match, and chain trust are exported.
 
 ## What Was Added
 
@@ -126,10 +126,9 @@ The dashboard is intentionally compact and uses only metrics available from the 
 ## Remaining Limitations
 
 - SMART disk health is exported by `/usr/local/sbin/shreyws-smart-metrics` into Node Exporter's textfile collector. It covers the system disk, `/srv` disk, and backup disk without exposing disk serial numbers.
-- Failed systemd services are not monitored yet. Recommended next step: either enable Node Exporter's systemd collector with the required host mounts/DBus access, or emit a root-owned textfile metric from a systemd timer.
 - Docker restart count is approximated with changes in `container_start_time_seconds`; Docker's exact restart counter is not exported by cAdvisor.
-- Most containers do not define Docker healthchecks, so cAdvisor health state is limited.
-- TLS certificate expiry is not currently exported.
+- Live infrastructure containers now expose application-level healthchecks where their images provide a reliable native endpoint or command. Backup metrics health additionally verifies that its textfile output remains fresh.
+- The current HTTPS endpoint presents Traefik's self-signed default certificate. Expiry is monitored, while hostname-match and trust metrics remain visible for remediation.
 - Grafana logs plugin background installer permission errors for bundled Elasticsearch/Zipkin plugins; dashboard and datasource provisioning still succeeds.
 
 ## Verification

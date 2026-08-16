@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Export the certificate currently served by the ShreyWS HTTPS endpoint."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+
+
+HOST = os.environ.get("TLS_HOST", "shreyws.tail1591fa.ts.net")
+PORT = int(os.environ.get("TLS_PORT", "443"))
+OUTPUT = Path(os.environ.get("OUTPUT_FILE", "/srv/shreyws/services/node-exporter/textfile/shreyws_tls.prom"))
+
+
+def run(command: list[str], *, input_data: bytes | None = None, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(command, input=input_data, capture_output=True, check=check, timeout=20)
+
+
+def emit_metrics() -> int:
+    now = int(time.time())
+    connection = run(
+        ["openssl", "s_client", "-connect", f"127.0.0.1:{PORT}", "-servername", HOST, "-showcerts"],
+        input_data=b"",
+        check=False,
+    )
+    match = re.search(b"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", connection.stdout, re.DOTALL)
+    if not match:
+        raise RuntimeError("HTTPS endpoint did not return a certificate")
+    certificate = match.group(0) + b"\n"
+
+    metadata = run(["openssl", "x509", "-noout", "-enddate", "-subject", "-issuer"], input_data=certificate).stdout.decode()
+    not_after_text = next(line.split("=", 1)[1] for line in metadata.splitlines() if line.startswith("notAfter="))
+    not_after = int(datetime.strptime(not_after_text, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc).timestamp())
+    subject = next(line.split("=", 1)[1].strip() for line in metadata.splitlines() if line.startswith("subject="))
+    issuer = next(line.split("=", 1)[1].strip() for line in metadata.splitlines() if line.startswith("issuer="))
+    hostname_match = run(["openssl", "x509", "-noout", "-checkhost", HOST], input_data=certificate, check=False).returncode == 0
+    trust = run(
+        ["openssl", "s_client", "-connect", f"127.0.0.1:{PORT}", "-servername", HOST, "-verify_hostname", HOST, "-verify_return_error"],
+        input_data=b"",
+        check=False,
+    ).returncode == 0
+
+    labels = f'host="{HOST}",port="{PORT}"'
+    values = [
+        "# HELP shreyws_tls_probe_success Whether the HTTPS certificate probe completed successfully.",
+        "# TYPE shreyws_tls_probe_success gauge",
+        f"shreyws_tls_probe_success{{{labels}}} 1",
+        "# HELP shreyws_tls_certificate_not_after_timestamp_seconds Certificate expiration as a Unix timestamp.",
+        "# TYPE shreyws_tls_certificate_not_after_timestamp_seconds gauge",
+        f"shreyws_tls_certificate_not_after_timestamp_seconds{{{labels}}} {not_after}",
+        "# HELP shreyws_tls_certificate_days_remaining Days remaining before the served certificate expires.",
+        "# TYPE shreyws_tls_certificate_days_remaining gauge",
+        f"shreyws_tls_certificate_days_remaining{{{labels}}} {(not_after - now) / 86400:.6f}",
+        "# HELP shreyws_tls_certificate_hostname_match Whether the served certificate matches the requested hostname.",
+        "# TYPE shreyws_tls_certificate_hostname_match gauge",
+        f"shreyws_tls_certificate_hostname_match{{{labels}}} {int(hostname_match)}",
+        "# HELP shreyws_tls_certificate_chain_trusted Whether OpenSSL trusts the served certificate chain and hostname.",
+        "# TYPE shreyws_tls_certificate_chain_trusted gauge",
+        f"shreyws_tls_certificate_chain_trusted{{{labels}}} {int(trust)}",
+        "# HELP shreyws_tls_metrics_last_success_timestamp_seconds Unix timestamp of the last successful TLS probe.",
+        "# TYPE shreyws_tls_metrics_last_success_timestamp_seconds gauge",
+        f"shreyws_tls_metrics_last_success_timestamp_seconds{{{labels}}} {now}",
+        f'# Served certificate subject: {subject}',
+        f'# Served certificate issuer: {issuer}',
+    ]
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = OUTPUT.with_name(f".{OUTPUT.name}.{os.getpid()}")
+    temporary.write_text("\n".join(values) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, OUTPUT)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(emit_metrics())
+    except Exception as error:
+        print(f"TLS metric collection failed: {error}", flush=True)
+        raise SystemExit(1)

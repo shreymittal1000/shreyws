@@ -13,6 +13,17 @@ services:
       - GF_SERVER_DOMAIN=shreyws.tail1591fa.ts.net
       - GF_SERVER_ROOT_URL=https://shreyws.tail1591fa.ts.net/grafana/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - --spider
+        - http://127.0.0.1:3000/api/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     labels:
       - traefik.enable=true
       - traefik.docker.network=traefik_default

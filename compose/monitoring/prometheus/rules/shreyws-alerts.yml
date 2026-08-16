@@ -454,3 +454,68 @@ groups:
         annotations:
           summary: "Grafana Alloy is dropping log entries"
           description: "Alloy reports dropped log lines for 15 minutes. Check Alloy processing stages and Loki write errors."
+
+  - name: shreyws-host-integrations
+    rules:
+      - alert: SystemdMetricsMissing
+        expr: absent(shreyws_systemd_failed_services)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host systemd failure metrics are missing"
+          description: "Node Exporter is not exposing the systemd failure textfile metrics. Check shreyws-systemd-metrics.timer."
+
+      - alert: SystemdMetricsStale
+        expr: time() - shreyws_systemd_metrics_last_success_timestamp_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host systemd failure metrics are stale"
+          description: "The systemd failure collector has not completed successfully for more than 15 minutes."
+
+      - alert: SystemdServiceFailed
+        expr: shreyws_systemd_service_failed == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host systemd service failed"
+          description: "{{ $labels.unit }} is in the failed state on ShreyWS."
+
+      - alert: TlsCertificateMetricsMissing
+        expr: absent(shreyws_tls_probe_success)
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate metrics are missing"
+          description: "Node Exporter is not exposing the ShreyWS TLS certificate metrics. Check shreyws-tls-metrics.timer."
+
+      - alert: TlsCertificateMetricsStale
+        expr: time() - shreyws_tls_metrics_last_success_timestamp_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate metrics are stale"
+          description: "The ShreyWS TLS certificate probe has not completed successfully for more than two hours."
+
+      - alert: TlsCertificateExpiringSoon
+        expr: shreyws_tls_certificate_days_remaining < 30 and shreyws_tls_certificate_days_remaining >= 7
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ShreyWS TLS certificate expires within 30 days"
+          description: "The certificate served for {{ $labels.host }} expires in {{ $value | humanize }} days."
+
+      - alert: TlsCertificateExpiryCritical
+        expr: shreyws_tls_certificate_days_remaining < 7
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS TLS certificate expires within 7 days"
+          description: "The certificate served for {{ $labels.host }} expires in {{ $value | humanize }} days."

@@ -171,8 +171,42 @@ Targets and host:
 - `AlloyUnavailable`: Alloy scrape is down for 5 minutes.
 - `LokiDiscardingLogEntries`: Loki discards log samples for 15 minutes.
 - `AlloyDroppedLogEntries`: Alloy drops log lines for 15 minutes.
+- `SystemdMetricsMissing`: systemd failure metrics are absent for 15 minutes.
+- `SystemdMetricsStale`: systemd failure metrics are older than 15 minutes.
+- `SystemdServiceFailed`: a host service remains failed for 5 minutes.
+- `TlsCertificateMetricsMissing`: TLS certificate metrics are absent for 2 hours.
+- `TlsCertificateMetricsStale`: TLS certificate metrics are older than 2 hours.
+- `TlsCertificateExpiringSoon`: the served HTTPS certificate has fewer than 30 days remaining.
+- `TlsCertificateExpiryCritical`: the served HTTPS certificate has fewer than 7 days remaining.
 
 `PrometheusTargetDown` is a general warning for expected scrape targets. `AlertmanagerUnavailable` is critical because Alertmanager is required for JSONL and Telegram delivery.
+
+## Host Integration Metrics
+
+Two root-run textfile collectors cover host state that is not safely available
+inside the Node Exporter container:
+
+```text
+/usr/local/sbin/shreyws-systemd-metrics
+/usr/local/sbin/shreyws-tls-metrics
+```
+
+The corresponding timers run every five minutes and hourly. Source-controlled
+copies live under `scripts/` and `systemd/` in this repository. They write
+atomically into `/srv/shreyws/services/node-exporter/textfile`.
+
+TLS metrics cover expiry, probe success, hostname matching, and chain trust for
+`shreyws.tail1591fa.ts.net:443`. The endpoint currently serves Traefik's
+self-signed default certificate, so hostname-match and trust metrics are `0`.
+Expiry alerts remain active for the certificate actually presented to clients;
+certificate trust remediation is tracked separately.
+
+## Container Healthchecks
+
+Application-level Docker healthchecks cover Prometheus, Alertmanager, Grafana,
+Node Exporter, Traefik, the alert webhooks, backup metrics freshness, Homepage,
+Authentik services, Loki, Alloy, Diun, and cAdvisor. The
+`ShreyWSContainerUnhealthy` alert consumes these states through cAdvisor.
 
 SMART:
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run ShreyWS HTTPS certificate metrics collector
+Documentation=file:/srv/shreyws/infra/docs/alerting.md
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+Unit=shreyws-tls-metrics.service
+
+[Install]
+WantedBy=timers.target

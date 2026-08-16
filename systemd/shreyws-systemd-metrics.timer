@@ -1,0 +1,13 @@
+[Unit]
+Description=Run failed systemd service metrics collector
+Documentation=file:/srv/shreyws/infra/docs/alerting.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=true
+Unit=shreyws-systemd-metrics.service
+
+[Install]
+WantedBy=timers.target
