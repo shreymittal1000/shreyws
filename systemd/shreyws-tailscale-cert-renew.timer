@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the ShreyWS Tailscale HTTPS certificate daily
+Documentation=file:/srv/shreyws/infra/docs/monitoring.md
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+RandomizedDelaySec=6h
+Persistent=true
+Unit=shreyws-tailscale-cert-renew.service
+
+[Install]
+WantedBy=timers.target

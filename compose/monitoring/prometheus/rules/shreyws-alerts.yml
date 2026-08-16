@@ -502,6 +502,24 @@ groups:
           summary: "TLS certificate metrics are stale"
           description: "The ShreyWS TLS certificate probe has not completed successfully for more than two hours."
 
+      - alert: TlsCertificateHostnameMismatch
+        expr: shreyws_tls_certificate_hostname_match == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS TLS certificate hostname mismatch"
+          description: "The certificate served for {{ $labels.host }} does not match the requested hostname."
+
+      - alert: TlsCertificateUntrusted
+        expr: shreyws_tls_certificate_chain_trusted == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS TLS certificate is not trusted"
+          description: "The certificate chain served for {{ $labels.host }} is not trusted by the host CA store."
+
       - alert: TlsCertificateExpiringSoon
         expr: shreyws_tls_certificate_days_remaining < 30 and shreyws_tls_certificate_days_remaining >= 7
         for: 1h

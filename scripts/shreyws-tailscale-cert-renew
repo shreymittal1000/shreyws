@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+DOMAIN="shreyws.tail1591fa.ts.net"
+CERT_DIR="/srv/shreyws/secrets/traefik/tls"
+CERT_FILE="$CERT_DIR/cert.pem"
+KEY_FILE="$CERT_DIR/key.pem"
+STAGING_DIR="$CERT_DIR/.renew"
+
+cleanup() {
+  rm -f "$STAGING_DIR/cert.pem" "$STAGING_DIR/key.pem"
+  rmdir "$STAGING_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+install -d -o root -g root -m 0700 "$CERT_DIR"
+rm -f "$STAGING_DIR/cert.pem" "$STAGING_DIR/key.pem" 2>/dev/null || true
+rmdir "$STAGING_DIR" 2>/dev/null || true
+install -d -o root -g root -m 0700 "$STAGING_DIR"
+
+tailscale cert \
+  --min-validity=720h \
+  --cert-file="$STAGING_DIR/cert.pem" \
+  --key-file="$STAGING_DIR/key.pem" \
+  "$DOMAIN"
+
+openssl x509 -in "$STAGING_DIR/cert.pem" -noout -checkhost "$DOMAIN"
+cert_hash="$(openssl x509 -in "$STAGING_DIR/cert.pem" -pubkey -noout | sha256sum | cut -d' ' -f1)"
+key_hash="$(openssl pkey -in "$STAGING_DIR/key.pem" -pubout | sha256sum | cut -d' ' -f1)"
+if [ "$cert_hash" != "$key_hash" ]; then
+  echo "certificate and private key do not match" >&2
+  exit 1
+fi
+
+if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ] \
+  && cmp -s "$STAGING_DIR/cert.pem" "$CERT_FILE" \
+  && cmp -s "$STAGING_DIR/key.pem" "$KEY_FILE"; then
+  echo "Tailscale certificate already has at least 30 days of validity"
+  exit 0
+fi
+
+install -o root -g root -m 0644 "$STAGING_DIR/cert.pem" "$CERT_FILE"
+install -o root -g root -m 0600 "$STAGING_DIR/key.pem" "$KEY_FILE"
+
+docker restart shreyws-traefik >/dev/null
+for delay in 1 2 3 4 5 6; do
+  health="$(docker inspect --format '{{.State.Health.Status}}' shreyws-traefik 2>/dev/null || true)"
+  if [ "$health" = "healthy" ]; then
+    curl --fail --silent --show-error --output /dev/null --max-time 10 "https://$DOMAIN/"
+    systemctl start shreyws-tls-metrics.service
+    echo "renewed Tailscale certificate and restarted Traefik"
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "Traefik did not become healthy after certificate renewal" >&2
+exit 1

@@ -176,6 +176,8 @@ Targets and host:
 - `SystemdServiceFailed`: a host service remains failed for 5 minutes.
 - `TlsCertificateMetricsMissing`: TLS certificate metrics are absent for 2 hours.
 - `TlsCertificateMetricsStale`: TLS certificate metrics are older than 2 hours.
+- `TlsCertificateHostnameMismatch`: the served certificate does not match the ShreyWS hostname for 15 minutes.
+- `TlsCertificateUntrusted`: the served certificate chain is untrusted for 15 minutes.
 - `TlsCertificateExpiringSoon`: the served HTTPS certificate has fewer than 30 days remaining.
 - `TlsCertificateExpiryCritical`: the served HTTPS certificate has fewer than 7 days remaining.
 
@@ -196,10 +198,15 @@ copies live under `scripts/` and `systemd/` in this repository. They write
 atomically into `/srv/shreyws/services/node-exporter/textfile`.
 
 TLS metrics cover expiry, probe success, hostname matching, and chain trust for
-`shreyws.tail1591fa.ts.net:443`. The endpoint currently serves Traefik's
-self-signed default certificate, so hostname-match and trust metrics are `0`.
-Expiry alerts remain active for the certificate actually presented to clients;
-certificate trust remediation is tracked separately.
+`shreyws.tail1591fa.ts.net:443`. Traefik serves a Tailscale-provisioned
+Let's Encrypt certificate from `/srv/shreyws/secrets/traefik/tls`. The private
+key remains root-only and outside this repository.
+
+`shreyws-tailscale-cert-renew.timer` checks daily and requests renewal when the
+certificate has less than 30 days remaining. A changed certificate triggers a
+controlled Traefik restart, HTTPS validation, and an immediate TLS metric
+refresh. Tailscale file-based certificates expire after 90 days, so this timer
+is required for unattended operation.
 
 ## Container Healthchecks
 

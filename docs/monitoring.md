@@ -128,7 +128,7 @@ The dashboard is intentionally compact and uses only metrics available from the 
 - SMART disk health is exported by `/usr/local/sbin/shreyws-smart-metrics` into Node Exporter's textfile collector. It covers the system disk, `/srv` disk, and backup disk without exposing disk serial numbers.
 - Docker restart count is approximated with changes in `container_start_time_seconds`; Docker's exact restart counter is not exported by cAdvisor.
 - Live infrastructure containers now expose application-level healthchecks where their images provide a reliable native endpoint or command. Backup metrics health additionally verifies that its textfile output remains fresh.
-- The current HTTPS endpoint presents Traefik's self-signed default certificate. Expiry is monitored, while hostname-match and trust metrics remain visible for remediation.
+- Traefik serves a publicly trusted Tailscale/Let's Encrypt certificate for `shreyws.tail1591fa.ts.net`. A daily timer renews it when less than 30 days of validity remain, then restarts and verifies Traefik. Expiry, hostname-match, and trust metrics are exported independently each hour.
 - Grafana logs plugin background installer permission errors for bundled Elasticsearch/Zipkin plugins; dashboard and datasource provisioning still succeeds.
 
 ## Verification

@@ -12,6 +12,10 @@ The user-level systemd timer runs once per minute and requires both:
 - an HTTPS response in the `200` through `399` range from
   `https://shreyws.tail1591fa.ts.net/`
 
+The HTTPS request uses the workstation's normal CA trust store and hostname
+verification. An expired, self-signed, or mismatched certificate therefore
+counts as a failed check.
+
 An outage notification is sent after three consecutive failed checks. A
 recovery notification is sent after two consecutive successful checks. State
 is persisted locally so a single transient failure or recovery does not page.
@@ -53,8 +57,9 @@ This does not make the monitor independent of workstation sleep or power loss.
 ## Verification
 
 On 2026-08-16, the script's notification self-test delivered both outage and
-recovery messages. A live timer invocation then passed with Tailscale ping
-available and HTTPS status `302`.
+recovery messages. After installing the Tailscale/Let's Encrypt certificate, a
+live timer invocation passed with Tailscale ping available, trusted HTTPS, and
+status `302`.
 
 On the same date, a temporary Prometheus alert verified the complete server-side
 pipeline through Alertmanager, the local JSONL webhook, and Telegram. The test
