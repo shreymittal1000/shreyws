@@ -5,7 +5,6 @@ services:
     restart: unless-stopped
     networks:
       - traefik_default
-      - pilot_frontend
     volumes:
       - /srv/shreyws/infra/compose/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - /srv/shreyws/infra/compose/monitoring/prometheus/rules:/etc/prometheus/rules:ro
@@ -210,6 +209,4 @@ services:
 
 networks:
   traefik_default:
-    external: true
-  pilot_frontend:
     external: true

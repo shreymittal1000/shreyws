@@ -277,12 +277,13 @@ This keeps raw disk access out of Docker. The collector only runs read-only `sma
 Monitored disks:
 
 ```text
-/dev/sdc  role=system  mounted at /
-/dev/sda  role=srv     mounted at /srv
-/dev/sdb  role=backup  mounted at /srv/shreyws/backups
+system-disk  role=system  mounted at /
+srv-disk     role=srv     mounted at /srv
+backup-disk  role=backup  mounted at /srv/shreyws/backups
 ```
 
-Labels intentionally include only device path and role. Serial numbers are not exported.
+Labels intentionally include only a stable logical device name and role. Serial
+numbers and changeable `/dev/sdX` names are not exported.
 
 Metrics:
 
@@ -327,7 +328,12 @@ curl -fsS http://127.0.0.1:9100/metrics | grep '^shreyws_smart_'
 
 Troubleshooting:
 
-- If `SmartMetricsCollectionFailed` fires, run `sudo smartctl -j -i -H -A /dev/sdX` for the affected disk and inspect journald with `journalctl -u shreyws-smart-metrics.service`.
+- The collector opens disks through stable `/dev/disk/by-id` paths so Linux
+  `/dev/sdX` reordering cannot swap metric roles after a reboot. Prometheus uses
+  the non-sensitive labels `system-disk`, `srv-disk`, and `backup-disk`.
+- If `SmartMetricsCollectionFailed` fires, resolve the affected disk's current
+  path with `ls -l /dev/disk/by-id/`, run `sudo smartctl -j -i -H -A` against
+  that stable path, and inspect `journalctl -u shreyws-smart-metrics.service`.
 - If `SmartDeviceMissing` fires after hardware changes, verify `lsblk` and update the device-role mapping in `scripts/shreyws-smart-metrics`.
 - If `SmartUnsupported` fires, verify whether the disk or USB/SATA bridge supports SMART and whether a `smartctl -d` device type is required.
 - If Node Exporter does not expose metrics, verify the textfile directory mount in `compose/monitoring/compose.yaml` and the file permissions on `shreyws_smart.prom`.

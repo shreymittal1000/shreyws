@@ -144,29 +144,11 @@ Verified on 2026-07-08:
 - Grafana datasource and dashboard provisioning completes.
 - Grafana dashboard route redirects to login.
 - Existing HTTPS service routes still respond.
-## Pilot Workload
+## Pilot Workload Reference
 
-The pilot service is scraped by Prometheus as:
-
-```text
-job="pilot"
-target="pilot:8000"
-```
-
-It exposes:
-
-```text
-/-/health
-/metrics
-```
-
-Pilot-specific alerts live in:
-
-```text
-/srv/shreyws/infra/compose/monitoring/prometheus/rules/pilot-alerts.yml
-```
-
-Alerts cover target availability, missing pilot metrics and missing SQLite persistence. cAdvisor continues to provide generic container health, restart and resource coverage.
+The pilot workload is no longer part of the live runtime. Its Compose definition
+and documentation remain as a reference, but Prometheus no longer joins the
+pilot network, scrapes `pilot:8000`, or loads pilot-specific alerts.
 
 ## Owner Agent Pilot Reference
 

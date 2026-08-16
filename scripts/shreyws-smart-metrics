@@ -17,9 +17,21 @@ OUTPUT_FILE = TEXTFILE_DIR / "shreyws_smart.prom"
 SMARTCTL = os.environ.get("SMARTCTL", "/usr/sbin/smartctl")
 
 DEVICES = [
-    {"path": "/dev/sdc", "role": "system"},
-    {"path": "/dev/sda", "role": "srv"},
-    {"path": "/dev/sdb", "role": "backup"},
+    {
+        "path": "/dev/disk/by-id/ata-SAMSUNG_MZHPV256HDGL-000H1_S1WZNYAGA04890",
+        "label": "system-disk",
+        "role": "system",
+    },
+    {
+        "path": "/dev/disk/by-id/ata-WDC_WD20EARX-00PASB0_WD-WCAZAD846075",
+        "label": "srv-disk",
+        "role": "srv",
+    },
+    {
+        "path": "/dev/disk/by-id/ata-ST500DM002-1BD142_Z3TEFFBS",
+        "label": "backup-disk",
+        "role": "backup",
+    },
 ]
 
 ATA_ATTRS = {
@@ -100,26 +112,26 @@ def run_smartctl(device: str) -> tuple[dict | None, str | None]:
         return None, f"invalid smartctl JSON: {exc}"
 
 
-def collect_device(device: str, role: str) -> tuple[list[str], bool]:
+def collect_device(device_path: str, device_label: str, role: str) -> tuple[list[str], bool]:
     lines: list[str] = []
     collection_ok = True
-    present = Path(device).exists()
+    present = Path(device_path).exists()
 
-    lines.append(metric("device_present", 1 if present else 0, device, role))
+    lines.append(metric("device_present", 1 if present else 0, device_label, role))
     if not present:
-        lines.append(metric("collection_success", 0, device, role))
-        lines.append(metric("supported", 0, device, role))
-        lines.append(metric("available", 0, device, role))
-        lines.append(metric("health_ok", 0, device, role))
+        lines.append(metric("collection_success", 0, device_label, role))
+        lines.append(metric("supported", 0, device_label, role))
+        lines.append(metric("available", 0, device_label, role))
+        lines.append(metric("health_ok", 0, device_label, role))
         return lines, False
 
-    data, error = run_smartctl(device)
+    data, error = run_smartctl(device_path)
     if data is None:
-        lines.append(metric("collection_success", 0, device, role))
-        lines.append(metric("supported", 0, device, role))
-        lines.append(metric("available", 0, device, role))
-        lines.append(metric("health_ok", 0, device, role))
-        print(f"{device}: {error}", file=sys.stderr)
+        lines.append(metric("collection_success", 0, device_label, role))
+        lines.append(metric("supported", 0, device_label, role))
+        lines.append(metric("available", 0, device_label, role))
+        lines.append(metric("health_ok", 0, device_label, role))
+        print(f"{device_path}: {error}", file=sys.stderr)
         return lines, False
 
     smart_support = data.get("smart_support", {})
@@ -132,23 +144,23 @@ def collect_device(device: str, role: str) -> tuple[list[str], bool]:
     if not collection_success:
         collection_ok = False
 
-    lines.append(metric("collection_success", 1 if collection_success else 0, device, role))
-    lines.append(metric("supported", 1 if available else 0, device, role))
-    lines.append(metric("available", 1 if enabled else 0, device, role))
-    lines.append(metric("health_ok", 1 if health is True else 0, device, role))
+    lines.append(metric("collection_success", 1 if collection_success else 0, device_label, role))
+    lines.append(metric("supported", 1 if available else 0, device_label, role))
+    lines.append(metric("available", 1 if enabled else 0, device_label, role))
+    lines.append(metric("health_ok", 1 if health is True else 0, device_label, role))
 
     if protocol == "ATA":
         for attr_id, name in ATA_ATTRS.items():
-            lines.append(metric(name, raw_attr_value(data, attr_id), device, role))
+            lines.append(metric(name, raw_attr_value(data, attr_id), device_label, role))
 
     nvme = data.get("nvme_smart_health_information_log", {})
     if nvme:
-        lines.append(metric("nvme_critical_warning", int(nvme.get("critical_warning", 0) or 0), device, role))
-        lines.append(metric("nvme_media_errors", int(nvme.get("media_errors", 0) or 0), device, role))
+        lines.append(metric("nvme_critical_warning", int(nvme.get("critical_warning", 0) or 0), device_label, role))
+        lines.append(metric("nvme_media_errors", int(nvme.get("media_errors", 0) or 0), device_label, role))
 
     current_temp = temperature(data)
     if current_temp is not None:
-        lines.append(metric("temperature_celsius", current_temp, device, role))
+        lines.append(metric("temperature_celsius", current_temp, device_label, role))
 
     return lines, collection_ok
 
@@ -188,7 +200,7 @@ def main() -> int:
     ]
 
     for item in DEVICES:
-        device_lines, ok = collect_device(item["path"], item["role"])
+        device_lines, ok = collect_device(item["path"], item["label"], item["role"])
         lines.extend(device_lines)
         all_ok = all_ok and ok
 
