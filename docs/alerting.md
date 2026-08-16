@@ -23,6 +23,17 @@ Alertmanager and the alert-log webhook are internal-only Docker Compose services
 
 They have no Traefik routers and no published host ports.
 
+Alertmanager runs as UID/GID `65534` (`nobody:nogroup`). Its persistent bind
+mount must remain writable by that identity:
+
+```text
+/srv/shreyws/services/alertmanager
+```
+
+Expected ownership and mode are `65534:65534` and `0750`. Incorrect ownership
+prevents notification-log and silence snapshots from being written, producing
+`permission denied` maintenance errors in the Alertmanager logs.
+
 Local alert log:
 
 ```text
