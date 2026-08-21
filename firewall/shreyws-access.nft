@@ -1,0 +1,14 @@
+table inet shreyws_access {
+    chain input {
+        type filter hook input priority -5; policy accept;
+
+        ct state established,related accept
+
+        # Administrative access is permitted through Tailscale or the trusted LAN.
+        iifname "tailscale0" tcp dport { 3389, 3390, 41081 } accept
+        ip saddr 192.168.1.0/24 tcp dport { 3389, 3390, 41081 } accept
+
+        # Reject SSH and RDP arriving from every other network, including public IPv6.
+        tcp dport { 3389, 3390, 41081 } counter drop
+    }
+}

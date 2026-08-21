@@ -1,0 +1,13 @@
+[Unit]
+Description=ShreyWS host access restrictions
+Documentation=file:/srv/shreyws/infra/docs/security.md
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/shreyws-firewall-apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

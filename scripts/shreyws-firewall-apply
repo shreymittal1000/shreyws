@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+rules=/etc/shreyws-firewall/shreyws-access.nft
+
+nft delete table inet shreyws_access 2>/dev/null || true
+nft -f "$rules"
+nft list table inet shreyws_access
