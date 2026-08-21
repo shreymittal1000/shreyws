@@ -539,6 +539,24 @@ groups:
           summary: "Host systemd service failed"
           description: "{{ $labels.unit }} is in the failed state on ShreyWS."
 
+      - alert: FirewallServiceInactive
+        expr: shreyws_firewall_service_active == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS firewall service is inactive"
+          description: "The persistent host access firewall service is not active. SSH, RDP, or web ingress may be exposed."
+
+      - alert: FirewallRulesMissing
+        expr: shreyws_firewall_rules_present == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ShreyWS firewall rules are missing"
+          description: "One or more expected Tailscale/LAN restrictions for SSH, RDP, or web ingress are not loaded."
+
       - alert: TlsCertificateMetricsMissing
         expr: absent(shreyws_tls_probe_success)
         for: 2h

@@ -11,4 +11,19 @@ table inet shreyws_access {
         # Reject SSH and RDP arriving from every other network, including public IPv6.
         tcp dport { 3389, 41081 } counter drop
     }
+
+    chain forward {
+        type filter hook forward priority -5; policy accept;
+
+        ct state established,related accept
+
+        # Docker publishes Traefik through forwarding rather than host input.
+        # Keep HTTPS/HTTP reachable from Tailscale, the trusted LAN, and the host.
+        ct status dnat iifname "lo" tcp dport { 80, 443 } accept
+        ct status dnat iifname "tailscale0" tcp dport { 80, 443 } accept
+        ct status dnat ip saddr 192.168.1.0/24 tcp dport { 80, 443 } accept
+
+        # Reject published web ingress from every other network.
+        ct status dnat tcp dport { 80, 443 } counter drop
+    }
 }

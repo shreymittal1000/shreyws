@@ -30,6 +30,28 @@ def main() -> int:
         if fields:
             failed_units.append(fields[0])
 
+    firewall_service = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "shreyws-firewall.service"],
+        check=False,
+        timeout=20,
+    )
+    firewall_rules = subprocess.run(
+        ["nft", "list", "table", "inet", "shreyws_access"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    required_rules = (
+        'iifname "tailscale0" tcp dport { 3389, 41081 } accept',
+        'ip saddr 192.168.1.0/24 tcp dport { 3389, 41081 } accept',
+        'ct status dnat iifname "tailscale0" tcp dport { 80, 443 } accept',
+        'ct status dnat ip saddr 192.168.1.0/24 tcp dport { 80, 443 } accept',
+    )
+    firewall_rules_present = firewall_rules.returncode == 0 and all(
+        rule in firewall_rules.stdout for rule in required_rules
+    )
+
     now = int(time.time())
     lines = [
         "# HELP shreyws_systemd_failed_services Number of failed host systemd services.",
@@ -44,6 +66,12 @@ def main() -> int:
     )
     lines.extend(
         [
+            "# HELP shreyws_firewall_service_active Whether the persistent ShreyWS firewall service is active.",
+            "# TYPE shreyws_firewall_service_active gauge",
+            f"shreyws_firewall_service_active {int(firewall_service.returncode == 0)}",
+            "# HELP shreyws_firewall_rules_present Whether the expected SSH, RDP, and web restrictions are loaded.",
+            "# TYPE shreyws_firewall_rules_present gauge",
+            f"shreyws_firewall_rules_present {int(firewall_rules_present)}",
             "# HELP shreyws_systemd_metrics_last_success_timestamp_seconds Unix timestamp of the last successful collection.",
             "# TYPE shreyws_systemd_metrics_last_success_timestamp_seconds gauge",
             f"shreyws_systemd_metrics_last_success_timestamp_seconds {now}",
