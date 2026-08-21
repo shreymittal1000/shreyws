@@ -91,7 +91,7 @@ def build_digest() -> str:
     running, total, unhealthy = container_summary()
     failed = run("systemctl", "--failed", "--type=service", "--no-legend", "--plain").stdout.splitlines()
     pending = [line for line in run("apt-get", "-s", "upgrade", timeout=90).stdout.splitlines() if line.startswith("Inst ")]
-    git = run("runuser", "-u", "shreyws", "--", "git", "-C", "/srv/shreyws/infra", "status", "--porcelain").stdout.strip()
+    git = run("/usr/sbin/runuser", "-u", "shreyws", "--", "git", "-C", "/srv/shreyws/infra", "status", "--porcelain").stdout.strip()
     root = shutil.disk_usage("/")
     srv = shutil.disk_usage("/srv")
     uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
