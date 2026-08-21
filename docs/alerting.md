@@ -551,12 +551,12 @@ docker run --rm --entrypoint promtool \
   -v /srv/shreyws/infra/compose/monitoring/prometheus/rules:/rules:ro \
   prom/prometheus:v3.13.0 check rules /rules/shreyws-test-alert.yml
 
-docker kill -s HUP shreyws-prometheus
+docker exec shreyws-prometheus kill -HUP 1
 sleep 60
 tail -n 20 /srv/shreyws/logs/alertmanager/alerts.jsonl
 
 rm prometheus/rules/shreyws-test-alert.yml
-docker kill -s HUP shreyws-prometheus
+docker exec shreyws-prometheus kill -HUP 1
 sleep 180
 tail -n 40 /srv/shreyws/logs/alertmanager/alerts.jsonl
 ```
