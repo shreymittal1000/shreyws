@@ -153,15 +153,33 @@ The backup, backup-check and SMART metrics units run as root because they need B
 
 ## Firewall Decision
 
-No active firewall rules were changed during this audit. The system currently relies on service-level authentication, Tailscale, Docker-managed forwarding rules and upstream network policy. Because SSH and RDP are the remote recovery paths, enabling a deny-by-default host firewall remotely would be a lockout risk.
+ShreyWS has a dedicated nftables table named `inet shreyws_access`. It does
+not flush or replace the tables managed by Docker and Tailscale.
 
-Recommended future firewall work, preferably with physical access available:
+The access policy is:
 
-1. Confirm whether the current session is over Tailscale or LAN.
-2. Confirm whether global IPv6 is reachable from outside the home network.
-3. Allow established/related traffic, loopback, Tailscale, DHCP, essential ICMP, and explicit LAN management ports.
-4. Preserve Docker-managed forwarding chains.
-5. Test SSH and RDP from Tailscale and LAN before making the policy persistent.
+- SSH on TCP 41081 and GNOME RDP on TCP 3389 are allowed from `tailscale0`
+  and the trusted IPv4 LAN `192.168.1.0/24`.
+- Docker-published HTTP/HTTPS on TCP 80 and 443 are allowed from Tailscale,
+  the trusted LAN, and local host traffic.
+- Those ports are dropped from every other source, including public IPv6.
+- Other host traffic is unchanged by this narrow policy.
+
+Canonical files:
+
+- `firewall/shreyws-access.nft`
+- `scripts/shreyws-firewall-apply`
+- `systemd/shreyws-firewall.service`
+
+Runtime files:
+
+- `/etc/shreyws-firewall/shreyws-access.nft`
+- `/usr/local/sbin/shreyws-firewall-apply`
+- `/etc/systemd/system/shreyws-firewall.service`
+
+The service is enabled at boot. Node Exporter publishes
+`shreyws_firewall_service_active` and `shreyws_firewall_rules_present`;
+Prometheus alerts if either remains zero for five minutes.
 
 ## Recovery Access
 
@@ -171,6 +189,29 @@ If Authentik is unavailable, use Tailscale SSH to reach the host and either:
 2. temporarily remove the `authentik-forward-auth@docker` middleware from one affected router and recreate only that Compose project.
 
 Do not protect `/authentik/` or `/outpost.goauthentik.io/` behind Authentik forward-auth.
+
+For direct LAN administration, use the server's reserved address:
+
+```bash
+ssh -p 41081 shreyws@192.168.1.148
+```
+
+Tailscale SSH remains the preferred remote recovery path. To inspect or
+reapply the access rules:
+
+```bash
+sudo nft list table inet shreyws_access
+sudo systemctl restart shreyws-firewall.service
+```
+
+If an incorrect rule blocks required access and physical console access is
+available, remove only the ShreyWS table:
+
+```bash
+sudo nft delete table inet shreyws_access
+```
+
+After correcting the canonical rule, restart `shreyws-firewall.service`.
 
 ## Rollback
 
