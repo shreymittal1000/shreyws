@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Send a compact weekly ShreyWS operational digest to Telegram."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import urllib.parse
+import urllib.request
+
+
+TELEGRAM_ENV = Path("/srv/shreyws/secrets/alertmanager/telegram.env")
+METRICS_DIR = Path("/srv/shreyws/services/node-exporter/textfile")
+
+
+def run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def load_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def metric(name: str) -> float | None:
+    for path in METRICS_DIR.glob("*.prom"):
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(name + " "):
+                try:
+                    return float(line.rsplit(None, 1)[1])
+                except ValueError:
+                    return None
+    return None
+
+
+def human_duration(seconds: float) -> str:
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    return f"{days}d {hours}h" if days else f"{hours}h"
+
+
+def container_summary() -> tuple[int, int, list[str]]:
+    names = run("docker", "ps", "-a", "--format", "{{.Names}}").stdout.splitlines()
+    unhealthy: list[str] = []
+    running = 0
+    for name in names:
+        state = run(
+            "docker",
+            "inspect",
+            name,
+            "--format",
+            "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+        ).stdout.strip()
+        if state.startswith("running "):
+            running += 1
+        if state not in {"running healthy", "running none"}:
+            unhealthy.append(f"{name} ({state or 'unknown'})")
+    return running, len(names), unhealthy
+
+
+def active_alerts() -> list[str]:
+    result = run(
+        "docker",
+        "exec",
+        "shreyws-alertmanager",
+        "wget",
+        "-qO-",
+        "http://127.0.0.1:9093/api/v2/alerts",
+    )
+    if result.returncode != 0:
+        return ["Alertmanager query failed"]
+    alerts = json.loads(result.stdout or "[]")
+    return sorted(
+        f"{item.get('labels', {}).get('severity', 'unknown')}: {item.get('labels', {}).get('alertname', 'unknown')}"
+        for item in alerts
+        if item.get("status", {}).get("state") == "active"
+    )
+
+
+def build_digest() -> str:
+    running, total, unhealthy = container_summary()
+    failed = run("systemctl", "--failed", "--type=service", "--no-legend", "--plain").stdout.splitlines()
+    pending = [line for line in run("apt-get", "-s", "upgrade", timeout=90).stdout.splitlines() if line.startswith("Inst ")]
+    git = run("runuser", "-u", "shreyws", "--", "git", "-C", "/srv/shreyws/infra", "status", "--porcelain").stdout.strip()
+    root = shutil.disk_usage("/")
+    srv = shutil.disk_usage("/srv")
+    uptime = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    backup_age = metric("shreyws_backup_age_seconds")
+    backup_ok = metric("shreyws_backup_last_success")
+    restore_ok = metric("shreyws_restore_drill_success")
+    firewall_ok = metric("shreyws_firewall_rules_present")
+    alerts = active_alerts()
+
+    overall = "GREEN"
+    if unhealthy or failed or firewall_ok != 1:
+        overall = "RED"
+    elif alerts or pending or backup_ok != 1 or restore_ok != 1:
+        overall = "AMBER"
+
+    lines = [
+        f"ShreyWS Weekly Digest: {overall}",
+        "",
+        f"Uptime: {human_duration(uptime)}",
+        f"Containers: {running}/{total} running",
+        f"Failed host services: {len(failed)}",
+        f"Firewall rules present: {'yes' if firewall_ok == 1 else 'NO'}",
+        f"Disk /: {root.used / root.total:.0%} used",
+        f"Disk /srv: {srv.used / srv.total:.0%} used",
+        f"Backup: {'ok' if backup_ok == 1 else 'FAILED'}; age {human_duration(backup_age) if backup_age is not None else 'unknown'}",
+        f"Restore drill: {'ok' if restore_ok == 1 else 'FAILED'}",
+        f"Pending package updates: {len(pending)}",
+        f"Git drift: {'yes' if git else 'no'}",
+        f"Active alerts: {len(alerts)}",
+    ]
+    if alerts:
+        lines.extend(f"- {item}" for item in alerts[:8])
+    if unhealthy:
+        lines.append("Unhealthy containers:")
+        lines.extend(f"- {item}" for item in unhealthy[:8])
+    return "\n".join(lines)[:3900]
+
+
+def send_telegram(message: str) -> None:
+    values = load_env(TELEGRAM_ENV)
+    enabled = values.get("TELEGRAM_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    token = values.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = values.get("TELEGRAM_CHAT_ID", "")
+    if not enabled or not token or not chat_id:
+        raise RuntimeError("Telegram digest delivery is disabled or unconfigured")
+    data = urllib.parse.urlencode(
+        {"chat_id": chat_id, "text": message, "disable_web_page_preview": "true"}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage", data=data, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"Telegram returned HTTP {response.status}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    message = build_digest()
+    if args.dry_run:
+        print(message)
+    else:
+        send_telegram(message)
+        print("weekly digest delivery succeeded")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

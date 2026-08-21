@@ -1,0 +1,11 @@
+[Unit]
+Description=Send the ShreyWS operational digest every Sunday
+
+[Timer]
+OnCalendar=Sun *-*-* 09:00:00 Europe/Zurich
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target
+
