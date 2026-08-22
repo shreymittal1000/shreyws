@@ -19,6 +19,9 @@ class ValidationTests(unittest.TestCase):
     def test_valid_image(self):
         self.assertEqual(launchpad.validate_payload(self.valid())["name"], "demo-app")
 
+    def test_ui_has_valid_api_base_literal(self):
+        self.assertIn('const B="/launchpad/api";', launchpad.INDEX)
+
     def test_rejects_unapproved_image(self):
         value=self.valid(); value["source"]="evil/image:latest"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
