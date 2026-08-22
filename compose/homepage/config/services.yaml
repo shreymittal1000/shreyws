@@ -73,6 +73,10 @@
                   maximumFractionDigits: 0
 
 - Operations:
+    - Launchpad:
+        icon: mdi-rocket-launch
+        href: https://shreyws.tail1591fa.ts.net/launchpad/
+        description: Deploy and operate owner-managed applications
     - Backup Status:
         icon: mdi-database-clock
         href: https://shreyws.tail1591fa.ts.net/grafana/d/shreyws-overview/shreyws-overview?viewPanel=24

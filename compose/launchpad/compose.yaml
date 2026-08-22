@@ -1,0 +1,96 @@
+services:
+  launchpad:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shreyws/launchpad:0.1.0
+    container_name: shreyws-launchpad
+    restart: unless-stopped
+    read_only: true
+    mem_limit: 384m
+    cpus: "0.75"
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LAUNCHPAD_BASE_PATH: /launchpad
+      LAUNCHPAD_DB_PATH: /state/launchpad.db
+      LAUNCHPAD_APPS_ROOT: /srv/shreyws/services/launchpad/apps
+      LAUNCHPAD_HOST_PROC: /host/proc
+      LAUNCHPAD_HOST_SRV: /host/srv
+      LAUNCHPAD_INTERNAL_HOST: shreyws.tail1591fa.ts.net
+      LAUNCHPAD_OWNER_GROUP: shreyws-owners
+      LAUNCHPAD_PUBLIC_ENABLED: "false"
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    volumes:
+      # Launchpad is a Docker control plane. The direct socket is intentional;
+      # browser access is owner-only and all API inputs are policy validated.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /srv:/host/srv:ro
+      - /srv/shreyws/services/launchpad:/state
+      - /srv/shreyws/services/launchpad/apps:/srv/shreyws/services/launchpad/apps
+    networks:
+      - launchpad_frontend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=launchpad_frontend
+      - traefik.http.routers.launchpad.tls=true
+      - traefik.http.routers.launchpad.rule=Host(`shreyws.tail1591fa.ts.net`) && PathPrefix(`/launchpad`)
+      - traefik.http.routers.launchpad.entrypoints=websecure
+      - traefik.http.routers.launchpad.middlewares=authentik-forward-auth@docker
+      - traefik.http.services.launchpad.loadbalancer.server.port=8080
+      - diun.enable=true
+      - shreyws.trust_class=platform
+      - shreyws.workload=launchpad
+
+  launchpad-assistant:
+    image: shreyws/launchpad:0.1.0
+    container_name: shreyws-launchpad-assistant
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    mem_limit: 512m
+    cpus: "0.50"
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: ["python", "/app/assistant.py"]
+    environment:
+      HOME: /home/codex
+      CODEX_HOME: /home/codex/.codex
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+      - /home/codex/.codex/log:size=16m,nosuid,nodev
+      - /home/codex/.codex/sessions:size=32m,nosuid,nodev
+    volumes:
+      - /home/shreyws/.codex/packages/standalone/current/bin/codex:/usr/local/bin/codex:ro
+      - /home/shreyws/.codex:/home/codex/.codex
+      - /srv/shreyws/infra:/workspace:ro
+    networks: [launchpad_frontend]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8090/-/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - diun.enable=true
+      - shreyws.trust_class=owner
+      - shreyws.workload=launchpad-assistant
+
+networks:
+  launchpad_frontend:
+    external: true

@@ -50,6 +50,7 @@ services:
     networks:
       - traefik_default
       - pilot_frontend
+      - launchpad_frontend
       - docker_socket_proxy
     labels:
       - diun.enable=true
@@ -58,6 +59,8 @@ networks:
   traefik_default:
     external: true
   pilot_frontend:
+    external: true
+  launchpad_frontend:
     external: true
   docker_socket_proxy:
     external: true
