@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 tmp = tempfile.TemporaryDirectory()
@@ -49,6 +50,22 @@ class ValidationTests(unittest.TestCase):
     def test_environment_key_validation(self):
         value=self.valid(); value["environment"]={"BAD-KEY":"x"}
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
+
+    def test_external_discovery_excludes_owned_workloads(self):
+        inspected = [
+            {"Id":"a"*64,"Name":"/friend-site","Config":{"Image":"friend/site:latest","Labels":{"com.docker.compose.project":"friend"}},"State":{"Running":False,"Status":"exited"},"HostConfig":{"Memory":268435456,"NanoCpus":500000000},"NetworkSettings":{"Networks":{"friend-net":{"IPAddress":"192.168.1.130","GlobalIPv6Address":""}}}},
+            {"Id":"b"*64,"Name":"/grafana","Config":{"Image":"grafana/grafana","Labels":{"com.docker.compose.project":"grafana"}},"State":{"Running":False,"Status":"exited"},"HostConfig":{},"NetworkSettings":{"Networks":{}}},
+            {"Id":"c"*64,"Name":"/managed","Config":{"Image":"demo","Labels":{"shreyws.launchpad.app":"demo"}},"State":{"Running":False,"Status":"exited"},"HostConfig":{},"NetworkSettings":{"Networks":{}}},
+        ]
+        def fake_docker(args, **kwargs):
+            if args == ["ps", "-aq"]: return "a\nb\nc\n"
+            if args[0] == "inspect": return __import__("json").dumps(inspected)
+            raise AssertionError(args)
+        with patch.object(launchpad, "docker", side_effect=fake_docker):
+            rows = launchpad.external_rows()
+        self.assertEqual([row["name"] for row in rows], ["friend-site"])
+        self.assertEqual(rows[0]["networks"][0]["ipv4"], "192.168.1.130")
+        self.assertEqual(rows[0]["memory_mb"], 256)
 
 
 if __name__ == "__main__": unittest.main()

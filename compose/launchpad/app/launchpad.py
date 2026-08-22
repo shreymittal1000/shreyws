@@ -39,6 +39,7 @@ APP_LABEL = "shreyws.launchpad.app"
 APP_PREFIX = "shreyws-app-"
 NETWORK_PREFIX = "launchpad_app_"
 APP_SUBNET = ipaddress.ip_network("172.30.0.0/16")
+PLATFORM_PROJECTS = {"authentik", "diun", "grafana", "homepage", "launchpad", "logging", "monitoring", "pilot", "socket-proxy", "traefik"}
 
 APPROVED_IMAGES = {
     "nginx:1.29.1-alpine": {"label": "Nginx static/web", "port": 80, "read_only": False, "capabilities": ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID", "NET_BIND_SERVICE"]},
@@ -413,6 +414,45 @@ def app_rows() -> list[dict[str, object]]:
     return result
 
 
+def external_rows() -> list[dict[str, object]]:
+    """Discover non-platform containers without assuming lifecycle ownership."""
+    ids = [line for line in docker(["ps", "-aq"]).splitlines() if line]
+    if not ids:
+        return []
+    containers = json.loads(docker(["inspect", *ids], timeout=30))
+    running_ids = [item["Id"] for item in containers if item.get("State", {}).get("Running")]
+    stats: dict[str, dict[str, str]] = {}
+    if running_ids:
+        raw = docker(["stats", "--no-stream", "--format", "{{json .}}", *running_ids], timeout=30)
+        for line in raw.splitlines():
+            if line.strip():
+                item = json.loads(line)
+                stats[item["ID"]] = {"cpu": item.get("CPUPerc", ""), "memory": item.get("MemUsage", ""), "memory_percent": item.get("MemPerc", "")}
+    result = []
+    for item in containers:
+        labels = item.get("Config", {}).get("Labels") or {}
+        project = labels.get("com.docker.compose.project", "manual")
+        if labels.get(APP_LABEL) or labels.get("shreyws.workload") or project in PLATFORM_PROJECTS:
+            continue
+        host = item.get("HostConfig", {})
+        networks = item.get("NetworkSettings", {}).get("Networks") or {}
+        memory = int(host.get("Memory") or 0)
+        nano_cpus = int(host.get("NanoCpus") or 0)
+        state = item.get("State", {})
+        container_id = str(item.get("Id", ""))
+        result.append({
+            "id": container_id, "short_id": container_id[:12], "name": str(item.get("Name", "")).removeprefix("/"),
+            "image": item.get("Config", {}).get("Image", "unknown"),
+            "project": project, "service": labels.get("com.docker.compose.service", ""),
+            "state": state.get("Status", "unknown"), "status": state.get("Health", {}).get("Status", state.get("Status", "unknown")),
+            "memory_mb": round(memory / 1048576) if memory else None,
+            "cpus": round(nano_cpus / 1_000_000_000, 2) if nano_cpus else None,
+            "networks": [{"network": name, "ipv4": value.get("IPAddress", ""), "ipv6": value.get("GlobalIPv6Address", "")} for name, value in sorted(networks.items())],
+            "stats": stats.get(container_id[:12], stats.get(container_id, {})),
+        })
+    return sorted(result, key=lambda value: (str(value["project"]), str(value["name"])))
+
+
 def memory_summary() -> dict[str, int]:
     values: dict[str, int] = {}
     for line in (HOST_PROC / "meminfo").read_text().splitlines():
@@ -461,9 +501,12 @@ INDEX = r'''<!doctype html>
 const B="''' + BASE + r'''/api"; const fmt=n=>{const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`};
 async function api(path,opt={}){opt.headers={...(opt.headers||{}),'X-Requested-With':'launchpad'};if(opt.body)opt.headers['Content-Type']='application/json';const r=await fetch(B+path,opt);const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j}
 function pairs(s){const o={};for(const line of s.split('\n')){if(!line.trim())continue;const i=line.indexOf('=');if(i<1)throw Error('Use KEY=value lines');o[line.slice(0,i).trim()]=line.slice(i+1)}return o}
-async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage;metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576)],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total],['System load',d.system.load.join(' · '),Math.min(1,+d.system.load[0]/4)]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');apps.innerHTML=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${a.name}</b> <span class="pill ${a.state}">${a.state}</span><div class="muted">${a.source} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${a.stats.memory||'—'}</div><a href="${a.url}" target="_blank" class="muted">${a.url}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No managed applications yet.</p>';events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${e.actor} · ${e.app||'platform'} · ${e.action}: ${e.outcome}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${i.image}" data-port="${i.port}">${i.label} · ${i.image}</option>`).join('');image.onchange=()=>form.container_port.value=image.selectedOptions[0].dataset.port;image.onchange()}catch(e){notice.textContent=e.message}}
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function externalHtml(items){if(!items.length)return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">None currently detected.</p>';return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">Discovered automatically. Lifecycle controls stay with their owner or Compose project.</p>'+items.map(a=>{const nets=a.networks.map(n=>`${esc(n.network)}: ${esc(n.ipv4||n.ipv6||'—')}`).join(' · ');const limits=[a.memory_mb?a.memory_mb+' MiB':'RAM unlimited',a.cpus?a.cpus+' CPU':'CPU unlimited',a.stats.memory||'—'].join(' · ');return `<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span> <span class="pill">external</span><div class="muted">${esc(a.image)} · project ${esc(a.project)}${a.service?' / '+esc(a.service):''}</div><div class="muted">${limits}</div><div class="muted">${nets}</div></div><button onclick="showExternalLogs('${a.id}')">Logs</button></div></div>`}).join('')}
+async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage;metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576)],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total],['System load',d.system.load.join(' · '),Math.min(1,+d.system.load[0]/4)]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>form.container_port.value=image.selectedOptions[0].dataset.port;image.onchange()}catch(e){notice.textContent=e.message}}
 sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;image.hidden=g;form.container_port.value=g?8080:image.selectedOptions[0]?.dataset.port||80};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Deploying…';try{const f=new FormData(form),g=f.get('source_type')==='git';await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});notice.textContent='Deployed.';form.reset();await loadAll()}catch(e){notice.textContent=e.message}};
 async function act(n,a){try{await api(`/apps/${n}/${a}`,{method:'POST'});await loadAll()}catch(e){alert(e.message)}}async function removeApp(n){if(!confirm(`Remove ${n}? Persistent data will be preserved.`))return;try{await api(`/apps/${n}`,{method:'DELETE'});await loadAll()}catch(e){alert(e.message)}}async function showLogs(n){try{const d=await api(`/apps/${n}/logs`);logTitle.textContent=n+' logs';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
+async function showExternalLogs(id){try{const d=await api(`/external/${id}/logs`);logTitle.textContent=d.name+' logs (external)';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 const assistant=document.createElement('section');assistant.className='card';assistant.style.gridColumn='span 12';assistant.innerHTML='<div class="app-head"><h2>Codex operator</h2><span id="aiStatus" class="pill">checking…</span></div><pre id="chatOutput">Ask about the server, a deployment, or what to do next. Codex runs read-only and cannot silently mutate Docker.</pre><form id="chatForm"><textarea id="chatInput" rows="3" placeholder="What can I safely deploy with 512 MiB?"></textarea><button class="primary">Ask Codex</button></form>';document.querySelector('.events').before(assistant);
 async function loadAssistant(){try{const s=await api('/assistant/status');aiStatus.textContent=s.authenticated?s.version+' · signed in':s.version+' · sign-in required'}catch(e){aiStatus.textContent='assistant unavailable'}}chatForm.onsubmit=async e=>{e.preventDefault();const message=chatInput.value.trim();if(!message)return;chatOutput.textContent='Codex is thinking…';try{const d=await api('/assistant/chat',{method:'POST',body:JSON.stringify({message})});chatOutput.textContent=d.reply}catch(e){chatOutput.textContent=e.message}};loadAll();loadAssistant();setInterval(loadAll,15000);setInterval(loadAssistant,60000);
 </script></body></html>'''
@@ -526,7 +569,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/-/health": self.send_json(200, {"status":"ok"}); return
             if path == "/": self.send_html(); return
             if path == "/api/overview":
-                self.send_json(200, {"system":system_summary(),"apps":app_rows(),"events":recent_events(),"approved_images":[{"image":k,**v} for k,v in APPROVED_IMAGES.items()]}); return
+                self.send_json(200, {"system":system_summary(),"apps":app_rows(),"external_apps":external_rows(),"events":recent_events(),"approved_images":[{"image":k,**v} for k,v in APPROVED_IMAGES.items()]}); return
             if path == "/api/assistant/status":
                 self.send_json(200, assistant_request("/status")); return
             match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/logs", path)
@@ -534,6 +577,17 @@ class Handler(BaseHTTPRequestHandler):
                 name = match.group(1); load_config(name)
                 logs = docker(["logs", "--tail", "250", APP_PREFIX + name], timeout=20) if container_exists(name) else ""
                 self.send_json(200, {"logs": logs[-100000:]}); return
+            match = re.fullmatch(r"/api/external/([a-f0-9]{64})/logs", path)
+            if match:
+                container_id = match.group(1)
+                details = json.loads(docker(["inspect", container_id], timeout=20))[0]
+                labels = details.get("Config", {}).get("Labels") or {}
+                project = labels.get("com.docker.compose.project", "manual")
+                if labels.get(APP_LABEL) or labels.get("shreyws.workload") or project in PLATFORM_PROJECTS:
+                    raise LaunchpadError("Container is not an external application")
+                name = str(details.get("Name", "")).removeprefix("/")
+                logs = docker(["logs", "--tail", "250", container_id], timeout=20)
+                self.send_json(200, {"name": name, "logs": logs[-100000:]}); return
             self.send_json(404, {"error":"not found"})
         except Exception as exc: self.send_json(400, {"error":str(exc)})
 
