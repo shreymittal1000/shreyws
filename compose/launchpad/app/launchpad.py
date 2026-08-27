@@ -27,8 +27,8 @@ HOST_PROC = Path(os.getenv("LAUNCHPAD_HOST_PROC", "/host/proc"))
 HOST_SRV = Path(os.getenv("LAUNCHPAD_HOST_SRV", "/host/srv"))
 INTERNAL_HOST = os.getenv("LAUNCHPAD_INTERNAL_HOST", "shreyws.tail1591fa.ts.net")
 OWNER_GROUP = os.getenv("LAUNCHPAD_OWNER_GROUP", "shreyws-owners")
-PUBLIC_ENABLED = os.getenv("LAUNCHPAD_PUBLIC_ENABLED", "false").lower() == "true"
 PUBLIC_DOMAIN_SUFFIXES = tuple(item.strip().lower().lstrip(".") for item in os.getenv("LAUNCHPAD_PUBLIC_DOMAIN_SUFFIXES", "").split(",") if item.strip())
+PUBLIC_ENABLED = bool(PUBLIC_DOMAIN_SUFFIXES)
 GIT_CHECK_INTERVAL = int(os.getenv("LAUNCHPAD_GIT_CHECK_INTERVAL", "900"))
 KNOWN_HOSTS_PATH = DB_PATH.parent / "ssh_known_hosts"
 STARTED = time.time()
@@ -188,15 +188,15 @@ def validate_payload(raw: dict[str, object]) -> dict[str, object]:
     visibility = str(raw.get("visibility", "internal"))
     if visibility not in {"internal", "public"}:
         raise LaunchpadError("Visibility must be internal or public")
-    if visibility == "public" and not PUBLIC_ENABLED:
-        raise LaunchpadError("Public deployment is disabled until public ingress is configured")
     domain = str(raw.get("domain", "")).strip().lower()
     if domain and not DOMAIN_RE.fullmatch(domain):
         raise LaunchpadError("Domain is not a valid fully-qualified hostname")
     if visibility == "public":
         if not domain:
             raise LaunchpadError("Public applications require a domain or subdomain")
-        if not PUBLIC_DOMAIN_SUFFIXES or not any(domain == suffix or domain.endswith("." + suffix) for suffix in PUBLIC_DOMAIN_SUFFIXES):
+        if not PUBLIC_DOMAIN_SUFFIXES:
+            raise LaunchpadError("No public domain suffix is configured yet")
+        if not any(domain == suffix or domain.endswith("." + suffix) for suffix in PUBLIC_DOMAIN_SUFFIXES):
             raise LaunchpadError("Domain is outside the configured public domain allowlist")
     elif domain:
         raise LaunchpadError("Custom domains are for public applications; internal apps use their private ShreyWS path")
@@ -702,7 +702,7 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 function loadState(load,cores){const ratio=load/cores;if(ratio<.25)return 'idle';if(ratio<.7)return 'normal';if(ratio<1)return 'busy';if(ratio<1.25)return 'saturated';return 'work queued'}
 function externalHtml(items){if(!items.length)return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">None currently detected.</p>';return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">Discovered automatically. Lifecycle controls stay with their owner or Compose project.</p>'+items.map(a=>{const nets=a.networks.map(n=>`${esc(n.network)}: ${esc(n.ipv4||n.ipv6||'—')}`).join(' · ');const limits=[a.memory_mb?a.memory_mb+' MiB':'RAM unlimited',a.cpus?a.cpus+' CPU':'CPU unlimited',a.stats.memory||'—'].join(' · ');return `<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span> <span class="pill">external</span><div class="muted">${esc(a.image)} · project ${esc(a.project)}${a.service?' / '+esc(a.service):''}</div><div class="muted">${limits}</div><div class="muted">${nets}</div></div><button onclick="showExternalLogs('${a.id}')">Logs</button></div></div>`}).join('')}
 const ipInput=form.elements.ipv4;ipInput.previousElementSibling.textContent='Fixed container IP (advanced, optional)';ipInput.placeholder='Automatically assigned (recommended)';const ipHint=document.createElement('p');ipHint.className='muted';ipHint.textContent='Private Docker-network address only. Public access is configured with Visibility and Domain.';ipInput.after(ipHint);
-form.elements.visibility.options[0].textContent='Internal · Tailscale only';form.elements.visibility.options[1].textContent='Public · Cloudflare Tunnel';const domainInput=form.elements.domain;const domainHint=document.createElement('p');domainHint.className='muted';domainHint.textContent='Required for public apps. Must belong to an approved domain configured for the tunnel.';domainInput.after(domainHint);
+form.elements.visibility.options[0].textContent='Internal · Tailscale only';form.elements.visibility.options[1].textContent='Public · Cloudflare Tunnel';const domainInput=form.elements.domain;const domainHint=document.createElement('p');domainHint.className='muted';domainHint.textContent='Optional. Entering an approved domain automatically selects public tunnel routing; leaving it blank stays Tailscale-only.';domainInput.after(domainHint);domainInput.addEventListener('input',()=>{form.elements.visibility.value=domainInput.value.trim()?'public':'internal'});form.elements.visibility.addEventListener('change',()=>{if(form.elements.visibility.value==='internal'&&domainInput.value.trim())domainInput.value=''});
 const gitPanel=document.createElement('div');gitPanel.id='gitPanel';gitPanel.hidden=true;git.after(gitPanel);gitPanel.innerHTML='<label>Branch</label><input name="git_ref" id="gitRef" value="main" list="gitBranches" placeholder="main"><datalist id="gitBranches"></datalist><div class="actions"><button type="button" onclick="prepareFormKey()">Prepare private-repo key</button><button type="button" onclick="loadFormBranches()">Load branches</button></div><pre id="formKeyOutput" hidden></pre><p class="muted">For a private GitHub repo: prepare the key, add it under Repository settings → Deploy keys without write access, then load branches.</p>';
 async function prepareFormKey(){notice.textContent='Preparing per-app key…';try{const name=form.name.value,source=git.value;const d=await api('/git/key/prepare',{method:'POST',body:JSON.stringify({name,source})});formKeyOutput.hidden=false;formKeyOutput.textContent=d.deploy_key.public_key+'\n\nFingerprint: '+d.deploy_key.fingerprint;notice.textContent='Add this public key to the GitHub repository as a read-only deploy key.'}catch(e){notice.textContent=e.message}}
 async function loadFormBranches(){notice.textContent='Loading branches…';try{const d=await api('/git/branches',{method:'POST',body:JSON.stringify({name:form.name.value,source:git.value})});gitBranches.innerHTML=d.branches.map(b=>`<option value="${esc(b)}"></option>`).join('');if(d.branches.length&&!d.branches.includes(gitRef.value))gitRef.value=d.branches.includes('main')?'main':d.branches[0];notice.textContent=d.branches.length?`${d.branches.length} branches loaded.`:'No branches found.'}catch(e){notice.textContent=e.message}}

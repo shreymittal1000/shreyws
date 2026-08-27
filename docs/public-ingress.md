@@ -42,7 +42,6 @@ hostnames receive Traefik's default 404 response.
    ```bash
    install -d -m 700 /srv/shreyws/secrets/launchpad
    cat > /srv/shreyws/secrets/launchpad/public-ingress.env <<'EOF'
-   LAUNCHPAD_PUBLIC_ENABLED=true
    LAUNCHPAD_PUBLIC_DOMAIN_SUFFIXES=apps.example.com
    EOF
    chmod 600 /srv/shreyws/secrets/launchpad/public-ingress.env
@@ -60,8 +59,10 @@ hostnames receive Traefik's default 404 response.
    docker compose up -d
    ```
 
-Launchpad will then accept **Public · Cloudflare Tunnel** only when a domain is
-present and belongs to an allowlisted suffix. Cloudflare provides the public
+Launchpad automatically selects **Public · Cloudflare Tunnel** when a domain
+is entered, but accepts it only when that domain belongs to an allowlisted
+suffix. Leaving the domain blank keeps the existing internal Tailscale route.
+Cloudflare provides the public
 TLS certificate; the private tunnel-to-Traefik hop uses its isolated Docker
 network. Internal applications remain behind Tailscale and Authentik.
 

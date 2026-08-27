@@ -27,18 +27,18 @@ class ValidationTests(unittest.TestCase):
         value=self.valid(); value["source"]="evil/image:latest"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
 
-    def test_rejects_public_until_enabled(self):
-        value=self.valid(); value["visibility"]="public"
+    def test_rejects_public_without_configured_domain_suffix(self):
+        value=self.valid(); value.update(visibility="public",domain="site.apps.example.com")
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
 
     def test_public_domain_must_be_allowlisted(self):
         value=self.valid(); value.update(visibility="public",domain="site.apps.example.com")
-        with patch.object(launchpad, "PUBLIC_ENABLED", True), patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("other.example",)):
+        with patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("other.example",)):
             with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
 
     def test_public_route_uses_tunnel_entrypoint_without_origin_tls(self):
         value=self.valid(); value.update(visibility="public",domain="site.apps.example.com")
-        with patch.object(launchpad, "PUBLIC_ENABLED", True), patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("apps.example.com",)):
+        with patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("apps.example.com",)):
             config=launchpad.validate_payload(value)
         labels=launchpad.route_labels(config,"app-network")
         self.assertIn("traefik.http.routers.launchpad-demo-app.entrypoints=cloudflare",labels)
