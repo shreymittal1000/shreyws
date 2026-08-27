@@ -74,8 +74,10 @@ Without a domain, the internal route is:
 https://shreyws.tail1591fa.ts.net/apps/<name>/
 ```
 
-Public deployments are rejected until `LAUNCHPAD_PUBLIC_ENABLED=true` and a
-public ingress/domain design is configured.
+Public deployments use the isolated Cloudflare Tunnel design documented in
+[`public-ingress.md`](public-ingress.md). They remain rejected until the tunnel
+is active, `LAUNCHPAD_PUBLIC_ENABLED=true`, and the requested hostname belongs
+to `LAUNCHPAD_PUBLIC_DOMAIN_SUFFIXES`.
 
 ## Secrets
 

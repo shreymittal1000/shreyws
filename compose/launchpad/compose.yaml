@@ -17,6 +17,9 @@ services:
       - FOWNER
     security_opt:
       - no-new-privileges:true
+    env_file:
+      - path: /srv/shreyws/secrets/launchpad/public-ingress.env
+        required: false
     environment:
       LAUNCHPAD_BASE_PATH: /launchpad
       LAUNCHPAD_DB_PATH: /state/launchpad.db
@@ -25,7 +28,6 @@ services:
       LAUNCHPAD_HOST_SRV: /host/srv
       LAUNCHPAD_INTERNAL_HOST: shreyws.tail1591fa.ts.net
       LAUNCHPAD_OWNER_GROUP: shreyws-owners
-      LAUNCHPAD_PUBLIC_ENABLED: "false"
     tmpfs:
       - /tmp:size=128m,noexec,nosuid,nodev
     volumes:

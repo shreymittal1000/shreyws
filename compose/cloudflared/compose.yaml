@@ -1,0 +1,25 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared@sha256:0aa26e284f05e6c77ae375b8c9c11d9eb6a448fb7bcd8d40f31cb6176189eb38
+    container_name: shreyws-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    env_file:
+      - /srv/shreyws/secrets/cloudflared/tunnel.env
+    networks:
+      - cloudflare_ingress
+    labels:
+      - diun.enable=true
+      - shreyws.trust_class=platform
+      - shreyws.workload=cloudflared
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 192m
+    cpus: "0.25"
+    pids_limit: 128
+
+networks:
+  cloudflare_ingress:
+    external: true

@@ -31,6 +31,19 @@ class ValidationTests(unittest.TestCase):
         value=self.valid(); value["visibility"]="public"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
 
+    def test_public_domain_must_be_allowlisted(self):
+        value=self.valid(); value.update(visibility="public",domain="site.apps.example.com")
+        with patch.object(launchpad, "PUBLIC_ENABLED", True), patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("other.example",)):
+            with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
+
+    def test_public_route_uses_tunnel_entrypoint_without_origin_tls(self):
+        value=self.valid(); value.update(visibility="public",domain="site.apps.example.com")
+        with patch.object(launchpad, "PUBLIC_ENABLED", True), patch.object(launchpad, "PUBLIC_DOMAIN_SUFFIXES", ("apps.example.com",)):
+            config=launchpad.validate_payload(value)
+        labels=launchpad.route_labels(config,"app-network")
+        self.assertIn("traefik.http.routers.launchpad-demo-app.entrypoints=cloudflare",labels)
+        self.assertNotIn("traefik.http.routers.launchpad-demo-app.tls=true",labels)
+
     def test_rejects_host_ip(self):
         value=self.valid(); value["ipv4"]="192.168.1.9"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
