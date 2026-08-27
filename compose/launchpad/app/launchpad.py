@@ -28,6 +28,8 @@ HOST_SRV = Path(os.getenv("LAUNCHPAD_HOST_SRV", "/host/srv"))
 INTERNAL_HOST = os.getenv("LAUNCHPAD_INTERNAL_HOST", "shreyws.tail1591fa.ts.net")
 OWNER_GROUP = os.getenv("LAUNCHPAD_OWNER_GROUP", "shreyws-owners")
 PUBLIC_ENABLED = os.getenv("LAUNCHPAD_PUBLIC_ENABLED", "false").lower() == "true"
+GIT_CHECK_INTERVAL = int(os.getenv("LAUNCHPAD_GIT_CHECK_INTERVAL", "900"))
+KNOWN_HOSTS_PATH = DB_PATH.parent / "ssh_known_hosts"
 STARTED = time.time()
 LOCK = threading.RLock()
 
@@ -115,6 +117,30 @@ def docker(args: list[str], *, timeout: int = 120, input_text: str | None = None
     return result.stdout
 
 
+def validate_app_name(value: object) -> str:
+    name = str(value).strip().lower()
+    if not NAME_RE.fullmatch(name):
+        raise LaunchpadError("App name must be 3-40 lowercase letters, digits, or hyphens")
+    return name
+
+
+def validate_git_source(value: object) -> str:
+    source = str(value).strip()
+    parsed = urlparse(source)
+    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "gitlab.com", "codeberg.org"}:
+        raise LaunchpadError("Git repositories must use HTTPS on GitHub, GitLab, or Codeberg")
+    if parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment or not re.fullmatch(r"/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?", parsed.path):
+        raise LaunchpadError("Git URL must identify one owner/repository without credentials or query parameters")
+    return source
+
+
+def validate_git_ref(value: object) -> str:
+    ref = str(value).strip() or "main"
+    if not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", ref) or ".." in ref or ref.startswith("/") or ref.endswith("/"):
+        raise LaunchpadError("Invalid Git branch")
+    return ref
+
+
 def parse_memory_mb(value: object) -> int:
     try:
         result = int(value)
@@ -146,23 +172,15 @@ def parse_storage(value: object) -> int:
 
 
 def validate_payload(raw: dict[str, object]) -> dict[str, object]:
-    name = str(raw.get("name", "")).strip().lower()
-    if not NAME_RE.fullmatch(name):
-        raise LaunchpadError("App name must be 3-40 lowercase letters, digits, or hyphens")
+    name = validate_app_name(raw.get("name", ""))
     source_type = str(raw.get("source_type", "image"))
     source = str(raw.get("source", "")).strip()
-    git_ref = str(raw.get("git_ref", "main")).strip() or "main"
+    git_ref = validate_git_ref(raw.get("git_ref", "main"))
     if source_type == "image":
         if source not in APPROVED_IMAGES:
             raise LaunchpadError("Container image is not on the approved list")
     elif source_type == "git":
-        parsed = urlparse(source)
-        if parsed.scheme != "https" or parsed.hostname not in {"github.com", "gitlab.com", "codeberg.org"}:
-            raise LaunchpadError("Git repositories must use HTTPS on GitHub, GitLab, or Codeberg")
-        if parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment or not re.fullmatch(r"/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?", parsed.path):
-            raise LaunchpadError("Git URL must identify one owner/repository without credentials or query parameters")
-        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", git_ref) or ".." in git_ref:
-            raise LaunchpadError("Invalid Git ref")
+        source = validate_git_source(source)
     else:
         raise LaunchpadError("Unknown source type")
 
@@ -244,15 +262,112 @@ def write_secret_config(config: dict[str, object]) -> None:
     os.chmod(env_file, 0o600)
 
 
+def deploy_key_paths(name: str) -> tuple[Path, Path]:
+    key_dir = app_dir(name) / ".ssh"
+    return key_dir / "deploy_key", key_dir / "deploy_key.pub"
+
+
+def ensure_github_known_hosts() -> None:
+    if KNOWN_HOSTS_PATH.exists() and KNOWN_HOSTS_PATH.stat().st_size:
+        return
+    request = Request("https://api.github.com/meta", headers={"Accept":"application/vnd.github+json", "User-Agent":"ShreyWS-Launchpad"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            keys = json.load(response).get("ssh_keys", [])
+    except Exception as exc:
+        raise LaunchpadError(f"Could not obtain GitHub SSH host keys over HTTPS: {exc}")
+    valid = [key for key in keys if re.fullmatch(r"(?:ssh-ed25519|ecdsa-sha2-nistp256|ssh-rsa) [A-Za-z0-9+/=]+", str(key))]
+    if not valid:
+        raise LaunchpadError("GitHub metadata returned no usable SSH host keys")
+    KNOWN_HOSTS_PATH.write_text("".join(f"github.com {key}\n" for key in valid), encoding="utf-8")
+    os.chmod(KNOWN_HOSTS_PATH, 0o600)
+
+
+def deploy_key_info(name: str) -> dict[str, object]:
+    private_key, public_key = deploy_key_paths(name)
+    if not private_key.exists() or not public_key.exists():
+        return {"exists": False, "public_key": "", "fingerprint": ""}
+    result = subprocess.run(["ssh-keygen", "-lf", str(public_key), "-E", "sha256"], text=True, capture_output=True, timeout=10)
+    if result.returncode:
+        raise LaunchpadError("Could not read deploy-key fingerprint")
+    fields = result.stdout.strip().split()
+    return {"exists": True, "public_key": public_key.read_text(encoding="utf-8").strip(), "fingerprint": fields[1] if len(fields) > 1 else "unknown"}
+
+
+def generate_deploy_key(name: str, *, rotate: bool = False) -> dict[str, object]:
+    name = validate_app_name(name)
+    private_key, public_key = deploy_key_paths(name)
+    app_dir(name).mkdir(parents=True, exist_ok=True)
+    os.chmod(app_dir(name), 0o700)
+    private_key.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(private_key.parent, 0o700)
+    if private_key.exists() and not rotate:
+        return deploy_key_info(name)
+    for path in (private_key, public_key):
+        path.unlink(missing_ok=True)
+    result = subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"launchpad:{name}@shreyws", "-f", str(private_key)],
+        text=True, capture_output=True, timeout=30,
+    )
+    if result.returncode:
+        raise LaunchpadError((result.stderr or "Deploy-key generation failed").strip())
+    os.chmod(private_key, 0o600); os.chmod(public_key, 0o600)
+    ensure_github_known_hosts()
+    return deploy_key_info(name)
+
+
+def revoke_deploy_key(name: str) -> None:
+    private_key, public_key = deploy_key_paths(validate_app_name(name))
+    private_key.unlink(missing_ok=True); public_key.unlink(missing_ok=True)
+
+
+def git_remote(source: str, name: str) -> tuple[str, dict[str, str]]:
+    parsed = urlparse(validate_git_source(source))
+    private_key, _ = deploy_key_paths(name)
+    if not private_key.exists():
+        return source, {}
+    if parsed.hostname != "github.com":
+        raise LaunchpadError("Per-app deploy keys currently support GitHub repositories; use public HTTPS for GitLab or Codeberg")
+    ensure_github_known_hosts()
+    repo_path = parsed.path.removesuffix(".git") + ".git"
+    command = f"ssh -i {private_key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile={KNOWN_HOSTS_PATH} -o LogLevel=ERROR"
+    return f"git@github.com:{repo_path.lstrip('/')}", {"GIT_SSH_COMMAND": command}
+
+
+def run_git(args: list[str], name: str, source: str, *, timeout: int = 180) -> str:
+    remote, extra_env = git_remote(source, name)
+    rendered = [remote if value == "{remote}" else value for value in args]
+    result = subprocess.run(rendered, text=True, capture_output=True, timeout=timeout, env={**os.environ, **extra_env})
+    if result.returncode:
+        message = (result.stderr or result.stdout or "Git command failed").strip()[-1200:]
+        if "Repository not found" in message or "Permission denied" in message:
+            message += " — add this app's public deploy key to the repository with read-only access"
+        raise LaunchpadError(message)
+    return result.stdout
+
+
+def list_git_branches(name: str, source: str) -> list[str]:
+    output = run_git(["git", "ls-remote", "--heads", "{remote}"], name, source)
+    branches = []
+    for line in output.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[1].startswith("refs/heads/"):
+            branches.append(parts[1].removeprefix("refs/heads/"))
+    return sorted(set(branches))
+
+
 def build_source(config: dict[str, object], update: bool = False) -> str:
     if config["source_type"] == "image":
         docker(["pull", str(config["source"])], timeout=600)
         return str(config["source"])
     name = str(config["name"])
     source_dir = app_dir(name) / "source"
+    source = str(config["source"])
+    remote, extra_env = git_remote(source, name)
     if update and (source_dir / ".git").exists():
+        subprocess.run(["git", "-C", str(source_dir), "remote", "set-url", "origin", remote], text=True, capture_output=True, timeout=30, env={**os.environ, **extra_env})
         dockerless = ["git", "-C", str(source_dir), "fetch", "--depth", "1", "origin", str(config["git_ref"])]
-        result = subprocess.run(dockerless, text=True, capture_output=True, timeout=180)
+        result = subprocess.run(dockerless, text=True, capture_output=True, timeout=180, env={**os.environ, **extra_env})
         if result.returncode:
             raise LaunchpadError(result.stderr.strip()[-1200:])
         subprocess.run(["git", "-C", str(source_dir), "reset", "--hard", "FETCH_HEAD"], check=True, timeout=30)
@@ -260,8 +375,8 @@ def build_source(config: dict[str, object], update: bool = False) -> str:
         if source_dir.exists():
             shutil.rmtree(source_dir)
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", str(config["git_ref"]), str(config["source"]), str(source_dir)],
-            text=True, capture_output=True, timeout=180,
+            ["git", "clone", "--depth", "1", "--branch", str(config["git_ref"]), remote, str(source_dir)],
+            text=True, capture_output=True, timeout=180, env={**os.environ, **extra_env},
         )
         if result.returncode:
             raise LaunchpadError(result.stderr.strip()[-1200:])
@@ -270,6 +385,69 @@ def build_source(config: dict[str, object], update: bool = False) -> str:
     tag = f"shreyws-launchpad/{name}:managed"
     docker(["build", "--pull", "--tag", tag, str(source_dir)], timeout=1200)
     return tag
+
+
+def git_status_path(name: str) -> Path:
+    return app_dir(name) / "git_status.json"
+
+
+def check_git_update(config: dict[str, object]) -> dict[str, object]:
+    name, source, branch = str(config["name"]), str(config["source"]), str(config["git_ref"])
+    status: dict[str, object] = {"checked_at": int(time.time()), "branch": branch, "update_available": False, "remote_sha": "", "local_sha": "", "error": ""}
+    try:
+        output = run_git(["git", "ls-remote", "{remote}", f"refs/heads/{branch}"], name, source)
+        remote_sha = output.split()[0] if output.split() else ""
+        if not remote_sha:
+            raise LaunchpadError(f"Branch not found: {branch}")
+        source_dir = app_dir(name) / "source"
+        result = subprocess.run(["git", "-C", str(source_dir), "rev-parse", "HEAD"], text=True, capture_output=True, timeout=15)
+        local_sha = result.stdout.strip() if result.returncode == 0 else ""
+        status.update(remote_sha=remote_sha, local_sha=local_sha, update_available=bool(local_sha and local_sha != remote_sha))
+    except Exception as exc:
+        status["error"] = str(exc)[-500:]
+    path = git_status_path(name)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(status), encoding="utf-8"); os.chmod(temporary, 0o600); temporary.replace(path)
+    return status
+
+
+def read_git_status(name: str) -> dict[str, object]:
+    path = git_status_path(name)
+    if not path.exists():
+        return {"checked_at": 0, "update_available": False, "error": "not checked yet"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"checked_at": 0, "update_available": False, "error": "status unavailable"}
+
+
+def git_details(name: str) -> dict[str, object]:
+    config = load_config(name)
+    if config["source_type"] != "git":
+        raise LaunchpadError("Application is not Git-based")
+    branches: list[str] = []
+    branch_error = ""
+    try:
+        branches = list_git_branches(name, str(config["source"]))
+    except Exception as exc:
+        branch_error = str(exc)
+    return {
+        "name": name, "source": config["source"], "branch": config["git_ref"],
+        "deploy_key": deploy_key_info(name), "branches": branches,
+        "branch_error": branch_error, "update": read_git_status(name),
+    }
+
+
+def git_check_loop() -> None:
+    while True:
+        time.sleep(30 if time.time() - STARTED < 60 else max(60, GIT_CHECK_INTERVAL))
+        try:
+            with db() as conn:
+                names = [row[0] for row in conn.execute("SELECT name FROM apps WHERE source_type='git'")]
+            for name in names:
+                check_git_update(load_config(name))
+        except Exception as exc:
+            print(f'level=warning component=launchpad-git-check message="{str(exc)[:500]}"', flush=True)
 
 
 def ensure_network(name: str) -> str:
@@ -374,6 +552,8 @@ def deploy(config: dict[str, object], actor: str, update: bool = False) -> None:
             docker(["rm", "-f", APP_PREFIX + name], timeout=30) if container_exists(name) else None
             create_container(config, image)
             save_config(config)
+            if config["source_type"] == "git":
+                check_git_update(config)
             audit(actor, name, "update" if update else "deploy", "success")
         except Exception as exc:
             audit(actor, name, "update" if update else "deploy", "failed", str(exc))
@@ -410,6 +590,7 @@ def app_rows() -> list[dict[str, object]]:
             **row, "env_json": None, "state": state.get("State", "missing"),
             "status": state.get("Status", "container missing"), "stats": stats.get(name, {}),
             "url": f"https://{row['domain']}" if row["domain"] else f"https://{INTERNAL_HOST}/apps/{name}/",
+            "git_status": read_git_status(name) if row["source_type"] == "git" else None,
         })
     return result
 
@@ -508,12 +689,23 @@ function pairs(s){const o={};for(const line of s.split('\n')){if(!line.trim())co
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function loadState(load,cores){const ratio=load/cores;if(ratio<.25)return 'idle';if(ratio<.7)return 'normal';if(ratio<1)return 'busy';if(ratio<1.25)return 'saturated';return 'work queued'}
 function externalHtml(items){if(!items.length)return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">None currently detected.</p>';return '<h2 style="margin-top:24px">Externally managed applications</h2><p class="muted">Discovered automatically. Lifecycle controls stay with their owner or Compose project.</p>'+items.map(a=>{const nets=a.networks.map(n=>`${esc(n.network)}: ${esc(n.ipv4||n.ipv6||'—')}`).join(' · ');const limits=[a.memory_mb?a.memory_mb+' MiB':'RAM unlimited',a.cpus?a.cpus+' CPU':'CPU unlimited',a.stats.memory||'—'].join(' · ');return `<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span> <span class="pill">external</span><div class="muted">${esc(a.image)} · project ${esc(a.project)}${a.service?' / '+esc(a.service):''}</div><div class="muted">${limits}</div><div class="muted">${nets}</div></div><button onclick="showExternalLogs('${a.id}')">Logs</button></div></div>`}).join('')}
+const gitPanel=document.createElement('div');gitPanel.id='gitPanel';gitPanel.hidden=true;git.after(gitPanel);gitPanel.innerHTML='<label>Branch</label><input name="git_ref" id="gitRef" value="main" list="gitBranches" placeholder="main"><datalist id="gitBranches"></datalist><div class="actions"><button type="button" onclick="prepareFormKey()">Prepare private-repo key</button><button type="button" onclick="loadFormBranches()">Load branches</button></div><pre id="formKeyOutput" hidden></pre><p class="muted">For a private GitHub repo: prepare the key, add it under Repository settings → Deploy keys without write access, then load branches.</p>';
+async function prepareFormKey(){notice.textContent='Preparing per-app key…';try{const name=form.name.value,source=git.value;const d=await api('/git/key/prepare',{method:'POST',body:JSON.stringify({name,source})});formKeyOutput.hidden=false;formKeyOutput.textContent=d.deploy_key.public_key+'\n\nFingerprint: '+d.deploy_key.fingerprint;notice.textContent='Add this public key to the GitHub repository as a read-only deploy key.'}catch(e){notice.textContent=e.message}}
+async function loadFormBranches(){notice.textContent='Loading branches…';try{const d=await api('/git/branches',{method:'POST',body:JSON.stringify({name:form.name.value,source:git.value})});gitBranches.innerHTML=d.branches.map(b=>`<option value="${esc(b)}"></option>`).join('');if(d.branches.length&&!d.branches.includes(gitRef.value))gitRef.value=d.branches.includes('main')?'main':d.branches[0];notice.textContent=d.branches.length?`${d.branches.length} branches loaded.`:'No branches found.'}catch(e){notice.textContent=e.message}}
+const gitManager=document.createElement('section');gitManager.className='card';gitManager.style.gridColumn='span 12';gitManager.innerHTML='<h2>Git application control</h2><div id="gitApps"><span class="muted">Loading Git applications…</span></div>';document.querySelector('.events').before(gitManager);
+const gitDialog=document.createElement('dialog');gitDialog.innerHTML='<div class="app-head"><h2 id="gitDialogTitle">Git settings</h2><button onclick="gitDialog.close()">Close</button></div><div id="gitDialogStatus" class="muted"></div><label>Branch</label><select id="existingBranch"></select><div class="actions"><button class="primary" onclick="switchExistingBranch()">Switch & deploy</button><button onclick="checkExistingGit()">Check update</button><button onclick="keyAction(\'rotate\')">Rotate key</button><button class="danger" onclick="keyAction(\'revoke\')">Revoke local key</button></div><pre id="existingKey"></pre><p class="muted">Deploy keys are read-only. Rotating or revoking locally does not remove the old public key from GitHub; remove it in repository settings too.</p>';document.body.append(gitDialog);let selectedGitApp=null;
+function updateText(s){if(s.error&&s.error!=='not checked yet')return 'check error · '+s.error;if(!s.checked_at)return 'not checked yet';return `${s.update_available?'update available':'up to date'} · checked ${new Date(s.checked_at*1000).toLocaleString()}`}
+async function loadGitApps(){try{const d=await api('/git/apps');gitApps.innerHTML=d.apps.length?d.apps.map(a=>`<div class="app app-head"><div><b>${esc(a.name)}</b> <span class="pill">${esc(a.git_ref)}</span><div class="muted">${esc(a.source)} · ${esc(updateText(a.update))}</div></div><button onclick="openGit('${a.name}')">Git settings</button></div>`).join(''):'<span class="muted">No Git-based applications deployed.</span>'}catch(e){gitApps.textContent=e.message}}
+async function openGit(name){gitDialogStatus.textContent='Loading branches…';gitDialog.showModal();try{const d=await api(`/apps/${name}/git`);selectedGitApp=d;gitDialogTitle.textContent=name+' · Git settings';gitDialogStatus.textContent=d.branch_error||updateText(d.update);existingBranch.innerHTML=(d.branches.length?d.branches:[d.branch]).map(b=>`<option value="${esc(b)}" ${b===d.branch?'selected':''}>${esc(b)}</option>`).join('');existingKey.textContent=d.deploy_key.exists?d.deploy_key.public_key+'\n\nFingerprint: '+d.deploy_key.fingerprint:'No deploy key prepared. Public HTTPS access is in use.'}catch(e){gitDialogStatus.textContent=e.message}}
+async function switchExistingBranch(){if(!selectedGitApp)return;if(!confirm(`Switch ${selectedGitApp.name} to ${existingBranch.value} and deploy it?`))return;gitDialogStatus.textContent='Switching branch and rebuilding…';try{await api(`/apps/${selectedGitApp.name}/switch-branch`,{method:'POST',body:JSON.stringify({branch:existingBranch.value})});await openGit(selectedGitApp.name);await loadAll();await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
+async function checkExistingGit(){if(!selectedGitApp)return;gitDialogStatus.textContent='Checking remote…';try{await api(`/apps/${selectedGitApp.name}/check-update`,{method:'POST',body:'{}'});await openGit(selectedGitApp.name);await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
+async function keyAction(action){if(!selectedGitApp)return;if(action==='revoke'&&!confirm('Destroy the local private deploy key? Also remove its public key from GitHub.'))return;gitDialogStatus.textContent=action==='rotate'?'Generating replacement key…':'Revoking local key…';try{await api(`/git/key/${action}`,{method:'POST',body:JSON.stringify({name:selectedGitApp.name,source:selectedGitApp.source})});await openGit(selectedGitApp.name)}catch(e){gitDialogStatus.textContent=e.message}}
 async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>form.container_port.value=image.selectedOptions[0].dataset.port;image.onchange()}catch(e){notice.textContent=e.message}}
-sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;image.hidden=g;form.container_port.value=g?8080:image.selectedOptions[0]?.dataset.port||80};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Deploying…';try{const f=new FormData(form),g=f.get('source_type')==='git';await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});notice.textContent='Deployed.';form.reset();await loadAll()}catch(e){notice.textContent=e.message}};
+sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?8080:image.selectedOptions[0]?.dataset.port||80};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Deploying…';try{const f=new FormData(form),g=f.get('source_type')==='git';await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});notice.textContent='Deployed.';form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
 async function act(n,a){try{await api(`/apps/${n}/${a}`,{method:'POST'});await loadAll()}catch(e){alert(e.message)}}async function removeApp(n){if(!confirm(`Remove ${n}? Persistent data will be preserved.`))return;try{await api(`/apps/${n}`,{method:'DELETE'});await loadAll()}catch(e){alert(e.message)}}async function showLogs(n){try{const d=await api(`/apps/${n}/logs`);logTitle.textContent=n+' logs';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 async function showExternalLogs(id){try{const d=await api(`/external/${id}/logs`);logTitle.textContent=d.name+' logs (external)';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 const assistant=document.createElement('section');assistant.className='card';assistant.style.gridColumn='span 12';assistant.innerHTML='<div class="app-head"><h2>Codex operator</h2><span id="aiStatus" class="pill">checking…</span></div><pre id="chatOutput">Ask about the server, a deployment, or what to do next. Codex runs read-only and cannot silently mutate Docker.</pre><form id="chatForm"><textarea id="chatInput" rows="3" placeholder="What can I safely deploy with 512 MiB?"></textarea><button class="primary">Ask Codex</button></form>';document.querySelector('.events').before(assistant);
-async function loadAssistant(){try{const s=await api('/assistant/status');aiStatus.textContent=s.authenticated?s.version+' · signed in':s.version+' · sign-in required'}catch(e){aiStatus.textContent='assistant unavailable'}}chatForm.onsubmit=async e=>{e.preventDefault();const message=chatInput.value.trim();if(!message)return;chatOutput.textContent='Codex is thinking…';try{const d=await api('/assistant/chat',{method:'POST',body:JSON.stringify({message})});chatOutput.textContent=d.reply}catch(e){chatOutput.textContent=e.message}};document.querySelectorAll('input[type=number]').forEach(input=>{const wrap=document.createElement('div');wrap.className='stepper';input.before(wrap);wrap.append(input);const controls=document.createElement('span');controls.className='step-controls';for(const [label,dir] of [['▲',1],['▼',-1]]){const button=document.createElement('button');button.type='button';button.textContent=label;button.tabIndex=-1;button.setAttribute('aria-label',dir>0?'Increase':'Decrease');button.onclick=()=>{dir>0?input.stepUp():input.stepDown();input.dispatchEvent(new Event('input',{bubbles:true}))};controls.append(button)}wrap.append(controls)});loadAll();loadAssistant();setInterval(loadAll,15000);setInterval(loadAssistant,60000);
+async function loadAssistant(){try{const s=await api('/assistant/status');aiStatus.textContent=s.authenticated?s.version+' · signed in':s.version+' · sign-in required'}catch(e){aiStatus.textContent='assistant unavailable'}}chatForm.onsubmit=async e=>{e.preventDefault();const message=chatInput.value.trim();if(!message)return;chatOutput.textContent='Codex is thinking…';try{const d=await api('/assistant/chat',{method:'POST',body:JSON.stringify({message})});chatOutput.textContent=d.reply}catch(e){chatOutput.textContent=e.message}};document.querySelectorAll('input[type=number]').forEach(input=>{const wrap=document.createElement('div');wrap.className='stepper';input.before(wrap);wrap.append(input);const controls=document.createElement('span');controls.className='step-controls';for(const [label,dir] of [['▲',1],['▼',-1]]){const button=document.createElement('button');button.type='button';button.textContent=label;button.tabIndex=-1;button.setAttribute('aria-label',dir>0?'Increase':'Decrease');button.onclick=()=>{dir>0?input.stepUp():input.stepDown();input.dispatchEvent(new Event('input',{bubbles:true}))};controls.append(button)}wrap.append(controls)});sourceType.onchange();loadAll();loadGitApps();loadAssistant();setInterval(loadAll,15000);setInterval(loadGitApps,60000);setInterval(loadAssistant,60000);
 </script></body></html>'''
 
 
@@ -577,6 +769,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"system":system_summary(),"apps":app_rows(),"external_apps":external_rows(),"events":recent_events(),"approved_images":[{"image":k,**v} for k,v in APPROVED_IMAGES.items()]}); return
             if path == "/api/assistant/status":
                 self.send_json(200, assistant_request("/status")); return
+            if path == "/api/git/apps":
+                with db() as conn:
+                    items = [{**dict(row), "update":read_git_status(str(row["name"]))} for row in conn.execute("SELECT name,source,git_ref FROM apps WHERE source_type='git' ORDER BY name")]
+                self.send_json(200, {"apps":items}); return
+            match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/git", path)
+            if match:
+                self.send_json(200, git_details(match.group(1))); return
             match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/logs", path)
             if match:
                 name = match.group(1); load_config(name)
@@ -601,11 +800,36 @@ class Handler(BaseHTTPRequestHandler):
             self.require_mutation(); path = self.route_path(); actor = self.actor()
             if path == "/api/apps":
                 config = validate_payload(self.body()); deploy(config, actor); self.send_json(201,{"status":"deployed","name":config["name"]}); return
+            if path == "/api/git/branches":
+                body = self.body(); name = validate_app_name(body.get("name", "")); source = validate_git_source(body.get("source", ""))
+                self.send_json(200, {"branches":list_git_branches(name, source)}); return
+            match = re.fullmatch(r"/api/git/key/(prepare|rotate|revoke)", path)
+            if match:
+                body = self.body(); name = validate_app_name(body.get("name", "")); source = validate_git_source(body.get("source", ""))
+                if urlparse(source).hostname != "github.com": raise LaunchpadError("Deploy keys currently support GitHub repositories")
+                action = match.group(1)
+                with LOCK:
+                    if action == "revoke": revoke_deploy_key(name); result = deploy_key_info(name)
+                    else: result = generate_deploy_key(name, rotate=action == "rotate")
+                audit(actor, name, f"deploy-key-{action}", "success")
+                self.send_json(200, {"deploy_key":result}); return
             if path == "/api/assistant/chat":
                 body = self.body(); message = str(body.get("message", "")).strip()
                 if not message or len(message) > 12000: raise LaunchpadError("Message must be 1-12000 characters")
                 result = assistant_request("/chat", {"message":message})
                 audit(actor, "assistant", "chat", "success")
+                self.send_json(200, result); return
+            match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/(check-update|switch-branch)", path)
+            if match:
+                name, action = match.groups(); config = load_config(name)
+                if config["source_type"] != "git": raise LaunchpadError("Application is not Git-based")
+                if action == "check-update":
+                    result = check_git_update(config); audit(actor,name,action,"success")
+                else:
+                    branch = validate_git_ref(self.body().get("branch", ""))
+                    if branch not in list_git_branches(name, str(config["source"])): raise LaunchpadError("Branch does not exist on the remote")
+                    config["git_ref"] = branch; deploy(config, actor, update=True); result = {"branch":branch,"status":"deployed"}
+                    check_git_update(config)
                 self.send_json(200, result); return
             match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/(start|stop|restart|update)", path)
             if not match: self.send_json(404,{"error":"not found"}); return
@@ -628,13 +852,16 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run(["docker","network","disconnect",network,"shreyws-traefik"],capture_output=True,timeout=30)
                 subprocess.run(["docker","network","rm",network],capture_output=True,timeout=30)
                 with db() as conn: conn.execute("DELETE FROM apps WHERE name=?",(name,))
-                audit(self.actor(),name,"remove","success","persistent data preserved")
+                revoke_deploy_key(name)
+                git_status_path(name).unlink(missing_ok=True)
+                audit(self.actor(),name,"remove","success","persistent data preserved; deploy key destroyed")
             self.send_json(200,{"status":"removed","data_preserved":True})
         except Exception as exc: self.send_json(400,{"error":str(exc)})
 
 
 def main() -> None:
     os.umask(0o077); init_state()
+    threading.Thread(target=git_check_loop, name="git-update-checker", daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     print('level=info component=launchpad message="service started" port=8080', flush=True)
     server.serve_forever()

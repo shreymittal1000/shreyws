@@ -30,8 +30,37 @@ Removing an application preserves this directory. Manual deletion is required
 for destructive state removal.
 
 Image deployments are restricted to `APPROVED_IMAGES` in `launchpad.py`. Git
-deployments are owner-trusted code and accept only HTTPS repositories hosted on
+deployments are owner-trusted code and accept HTTPS repository identifiers on
 GitHub, GitLab or Codeberg. Git repositories must contain a root `Dockerfile`.
+
+## Git repositories and deploy keys
+
+Public repositories clone over HTTPS. Private GitHub repositories use a unique
+Ed25519 deploy key stored under the application's mode-`0700` control directory;
+the private key is mode `0600`, is never returned by the API, and is never
+committed to this repository. Launchpad obtains GitHub's current SSH host keys
+from `https://api.github.com/meta` over verified HTTPS, stores them outside Git,
+and invokes SSH with `StrictHostKeyChecking=yes` and `IdentitiesOnly=yes`.
+
+Private-repository workflow:
+
+1. Enter the application name and GitHub HTTPS repository URL.
+2. Select **Prepare private-repo key**.
+3. Copy the displayed public key into GitHub repository **Settings → Deploy
+   keys**. Leave write access disabled.
+4. Select **Load branches**, choose a branch, and deploy.
+
+The Git application panel can list and switch branches, rebuild the container,
+show the deploy-key fingerprint, rotate keys, revoke the local private key, and
+check for upstream commits. Rotation generates a new key; add the new public key
+to GitHub and remove the old one. Revocation destroys the local private key, but
+the public key should also be removed from GitHub repository settings.
+
+Launchpad checks Git applications for upstream commits every 15 minutes and
+reports whether an update is available. Checks never deploy code automatically.
+Deployment remains an explicit **Update** or **Switch & deploy** action. GitLab
+and Codeberg remain available for public HTTPS repositories; per-app private
+deploy-key support is currently limited to GitHub.
 
 ## Networking
 

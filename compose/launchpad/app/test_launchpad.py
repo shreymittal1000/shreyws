@@ -39,6 +39,22 @@ class ValidationTests(unittest.TestCase):
         value=self.valid(); value.update(source_type="git",source="https://github.com/example/app.git")
         self.assertEqual(launchpad.validate_payload(value)["source_type"],"git")
 
+    def test_accepts_git_branch(self):
+        value=self.valid(); value.update(source_type="git",source="https://github.com/example/app.git",git_ref="feature/private-repos")
+        self.assertEqual(launchpad.validate_payload(value)["git_ref"],"feature/private-repos")
+
+    def test_rejects_unsafe_git_branch(self):
+        with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_git_ref("../main")
+
+    def test_git_remote_uses_strict_per_app_key(self):
+        private, public = launchpad.deploy_key_paths("demo-app")
+        private.parent.mkdir(parents=True, exist_ok=True); private.write_text("private"); public.write_text("public")
+        launchpad.KNOWN_HOSTS_PATH.write_text("github.com ssh-ed25519 AAAA\n")
+        remote, env = launchpad.git_remote("https://github.com/example/private.git", "demo-app")
+        self.assertEqual(remote, "git@github.com:example/private.git")
+        self.assertIn("StrictHostKeyChecking=yes", env["GIT_SSH_COMMAND"])
+        self.assertIn(str(private), env["GIT_SSH_COMMAND"])
+
     def test_rejects_git_ssrf(self):
         value=self.valid(); value.update(source_type="git",source="https://127.0.0.1/repo.git")
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
