@@ -51,6 +51,8 @@ APPROVED_IMAGES = {
     "postgres:16.14-alpine": {"label": "PostgreSQL 16", "port": 5432, "read_only": False, "capabilities": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]},
 }
 
+COMPATIBILITY_CAPABILITIES = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID", "NET_BIND_SERVICE"]
+
 
 class LaunchpadError(Exception):
     pass
@@ -200,12 +202,16 @@ def validate_payload(raw: dict[str, object]) -> dict[str, object]:
             raise LaunchpadError("Domain is outside the configured public domain allowlist")
     elif domain:
         raise LaunchpadError("Custom domains are for public applications; internal apps use their private ShreyWS path")
-    try:
-        port = int(raw.get("container_port", APPROVED_IMAGES.get(source, {}).get("port", 8080)))
-    except (TypeError, ValueError):
-        raise LaunchpadError("Container port must be numeric")
-    if port < 1 or port > 65535:
-        raise LaunchpadError("Container port must be between 1 and 65535")
+    raw_port = raw.get("container_port", "")
+    if source_type == "git" and str(raw_port).strip() == "":
+        port = 0
+    else:
+        try:
+            port = int(raw_port or APPROVED_IMAGES.get(source, {}).get("port", 0))
+        except (TypeError, ValueError):
+            raise LaunchpadError("Container port must be numeric or blank for automatic detection")
+        if port < 1 or port > 65535:
+            raise LaunchpadError("Container port must be between 1 and 65535")
 
     ipv4 = str(raw.get("ipv4", "")).strip()
     if ipv4:
@@ -390,9 +396,68 @@ def build_source(config: dict[str, object], update: bool = False) -> str:
             raise LaunchpadError(result.stderr.strip()[-1200:])
     if not (source_dir / "Dockerfile").is_file():
         raise LaunchpadError("Git repository must contain a Dockerfile at its root")
+    normalize_build_context_permissions(source_dir)
     tag = f"shreyws-launchpad/{name}:managed"
-    docker(["build", "--pull", "--tag", tag, str(source_dir)], timeout=1200)
+    # The host currently uses Docker's legacy builder. --force-rm prevents a
+    # failed Dockerfile RUN step from leaking a randomly named stopped
+    # container into Launchpad's external workload inventory.
+    docker(["build", "--pull", "--force-rm", "--tag", tag, str(source_dir)], timeout=1200)
     return tag
+
+
+def normalize_build_context_permissions(source_dir: Path) -> None:
+    """Make tracked build inputs readable without weakening the private app root."""
+    result = subprocess.run(
+        ["git", "-C", str(source_dir), "ls-files", "-z"],
+        capture_output=True, timeout=30, check=True,
+    )
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = Path(os.fsdecode(raw))
+        path = source_dir / relative
+        if path.is_symlink() or not path.exists():
+            continue
+        parent = path.parent
+        while parent != source_dir:
+            os.chmod(parent, 0o755)
+            parent = parent.parent
+        if path.is_dir():
+            os.chmod(path, 0o755)
+        elif path.is_file():
+            executable = bool(path.stat().st_mode & 0o100)
+            os.chmod(path, 0o755 if executable else 0o644)
+
+
+def image_exposed_ports(image: str) -> list[int]:
+    details = json.loads(docker(["image", "inspect", image], timeout=30))[0]
+    exposed = details.get("Config", {}).get("ExposedPorts") or {}
+    ports = []
+    for value in exposed:
+        match = re.fullmatch(r"(\d{1,5})/(?:tcp|udp)", str(value))
+        if match and value.endswith("/tcp"):
+            port = int(match.group(1))
+            if 1 <= port <= 65535:
+                ports.append(port)
+    return sorted(set(ports))
+
+
+def resolve_container_port(config: dict[str, object], image: str) -> int:
+    configured = int(config.get("container_port") or 0)
+    if configured:
+        return configured
+    ports = image_exposed_ports(image)
+    if len(ports) == 1:
+        return ports[0]
+    if not ports:
+        raise LaunchpadError(
+            "The image does not declare a TCP port. Add EXPOSE <port> to the Dockerfile "
+            "or enter the container port under Advanced deployment settings."
+        )
+    rendered = ", ".join(str(port) for port in ports)
+    raise LaunchpadError(
+        f"The image exposes multiple TCP ports ({rendered}). Choose the web port under Advanced deployment settings."
+    )
 
 
 def git_status_path(name: str) -> Path:
@@ -507,29 +572,95 @@ def route_labels(config: dict[str, object], network: str) -> list[str]:
     return labels
 
 
-def create_container(config: dict[str, object], image: str) -> None:
+def create_container(
+    config: dict[str, object], image: str, *, container: str | None = None,
+    routed: bool = True, restart: str = "unless-stopped", data_path: Path | None = None,
+) -> None:
     name = str(config["name"])
-    container = APP_PREFIX + name
+    container = container or APP_PREFIX + name
     network = ensure_network(name)
-    data = app_dir(name) / "data"
+    data = data_path or app_dir(name) / "data"
+    data.mkdir(parents=True, exist_ok=True)
     args = [
-        "create", "--name", container, "--restart", "unless-stopped",
+        "create", "--name", container, "--restart", restart,
         "--memory", f"{config['memory_mb']}m", "--cpus", str(config["cpus"]),
         "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-        "--network", network, "--label", f"{APP_LABEL}={name}",
+        "--network", network,
         "--env-file", str(app_dir(name) / "runtime.env"),
         "--mount", f"type=bind,src={data},dst=/data",
     ]
-    if config["ipv4"]:
+    # A fixed address may still belong to the live container during an update;
+    # the unrouted preflight should always use an automatically assigned IP.
+    if config["ipv4"] and routed:
         args.extend(["--ip", str(config["ipv4"])])
     image_policy = APPROVED_IMAGES.get(str(config["source"]), {}) if config["source_type"] == "image" else {}
-    for capability in image_policy.get("capabilities", []):
+    capabilities = list(image_policy.get("capabilities", []))
+    if config.get("runtime_profile") == "compatibility":
+        capabilities.extend(COMPATIBILITY_CAPABILITIES)
+    for capability in sorted(set(capabilities)):
         args.extend(["--cap-add", capability])
-    for label in route_labels(config, network):
+    labels = route_labels(config, network) if routed else ["shreyws.workload=launchpad-preflight", "traefik.enable=false"]
+    for label in labels:
         args.extend(["--label", label])
     args.extend([image])
     docker(args)
     docker(["start", container])
+
+
+def startup_failure(container: str) -> str:
+    details = json.loads(docker(["inspect", container], timeout=20))[0]
+    state = details.get("State", {})
+    if state.get("Running"):
+        return ""
+    logs = docker(["logs", "--tail", "80", container], timeout=20).strip()[-1600:]
+    reason = state.get("Error") or f"container exited with code {state.get('ExitCode', 'unknown')}"
+    if "Operation not permitted" in logs and ("chown(" in logs or "permission" in logs.lower()):
+        guidance = (
+            "The container requires root privileges that Launchpad intentionally removes. "
+            "Use a rootless/unprivileged runtime image and a port above 1024."
+        )
+    else:
+        guidance = "Review the startup log below or provide the environment values the application requires."
+    return f"Startup check failed: {reason}. {guidance}\n\n{logs}".strip()
+
+
+def container_exists_by_name(container: str) -> bool:
+    output = docker(["ps", "-a", "--filter", f"name=^{container}$", "--format", "{{.Names}}"])
+    return output.strip() == container
+
+
+def preflight_container(config: dict[str, object], image: str) -> list[str]:
+    name = str(config["name"])
+    container = f"{APP_PREFIX}{name}-preflight"
+    data = app_dir(name) / ".preflight-data"
+    if container_exists_by_name(container):
+        docker(["rm", "-f", container], timeout=30)
+    if data.exists():
+        shutil.rmtree(data)
+    warnings: list[str] = []
+    try:
+        create_container(config, image, container=container, routed=False, restart="no", data_path=data)
+        time.sleep(3)
+        failure = startup_failure(container)
+        if failure and "requires root privileges" in failure:
+            docker(["rm", "-f", container], timeout=30)
+            config["runtime_profile"] = "compatibility"
+            create_container(config, image, container=container, routed=False, restart="no", data_path=data)
+            time.sleep(3)
+            failure = startup_failure(container)
+            if not failure:
+                warnings.append(
+                    "The image needed Launchpad's limited compatibility capabilities; "
+                    "no privileged mode or host access was granted."
+                )
+        if failure:
+            raise LaunchpadError(failure)
+    finally:
+        if container_exists_by_name(container):
+            docker(["rm", "-f", container], timeout=30)
+        if data.exists():
+            shutil.rmtree(data)
+    return warnings
 
 
 def save_config(config: dict[str, object]) -> None:
@@ -550,7 +681,7 @@ def save_config(config: dict[str, object]) -> None:
         ))
 
 
-def deploy(config: dict[str, object], actor: str, update: bool = False) -> None:
+def deploy(config: dict[str, object], actor: str, update: bool = False) -> dict[str, object]:
     name = str(config["name"])
     with LOCK:
         if not update:
@@ -560,20 +691,46 @@ def deploy(config: dict[str, object], actor: str, update: bool = False) -> None:
         write_secret_config(config)
         try:
             image = build_source(config, update=update)
-            docker(["rm", "-f", APP_PREFIX + name], timeout=30) if container_exists(name) else None
-            create_container(config, image)
+            config["container_port"] = resolve_container_port(config, image)
+            warnings = preflight_container(config, image)
+            container = APP_PREFIX + name
+            rollback = container + "-rollback"
+            had_previous = container_exists(name)
+            if container_exists_by_name(rollback):
+                docker(["rm", "-f", rollback], timeout=30)
+            if had_previous:
+                docker(["stop", container], timeout=60)
+                docker(["rename", container, rollback], timeout=30)
+            try:
+                create_container(config, image)
+                time.sleep(3)
+                failure = startup_failure(container)
+                if failure:
+                    raise LaunchpadError(failure)
+            except Exception:
+                if container_exists_by_name(container):
+                    docker(["rm", "-f", container], timeout=30)
+                if had_previous and container_exists_by_name(rollback):
+                    docker(["rename", rollback, container], timeout=30)
+                    docker(["start", container], timeout=60)
+                raise
+            if had_previous and container_exists_by_name(rollback):
+                docker(["rm", "-f", rollback], timeout=30)
             save_config(config)
             if config["source_type"] == "git":
                 check_git_update(config)
             audit(actor, name, "update" if update else "deploy", "success")
+            return {
+                "status": "deployed", "name": name,
+                "container_port": config["container_port"], "warnings": warnings,
+            }
         except Exception as exc:
             audit(actor, name, "update" if update else "deploy", "failed", str(exc))
             raise
 
 
 def container_exists(name: str) -> bool:
-    output = docker(["ps", "-a", "--filter", f"name=^{APP_PREFIX + name}$", "--format", "{{.Names}}"])
-    return output.strip() == APP_PREFIX + name
+    return container_exists_by_name(APP_PREFIX + name)
 
 
 def app_rows() -> list[dict[str, object]]:
@@ -693,7 +850,7 @@ INDEX = r'''<!doctype html>
 :root{--bg:#020503;--panel:#050a07;--panel2:#08100b;--line:#183a24;--line-hot:#2b6b3d;--text:#d8ffe1;--muted:#6fa87c;--accent:#42ff72;--green:#42ff72;--red:#ff5c70;--amber:#d7ff54}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(rgba(66,255,114,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(66,255,114,.018) 1px,transparent 1px),radial-gradient(circle at 18% -10%,#0b2815 0,transparent 34%),var(--bg);background-size:32px 32px,32px 32px,auto,auto;color:var(--text);font:14px/1.5 "IBM Plex Mono","JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace}body:before{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent 0,transparent 3px,rgba(0,0,0,.08) 4px);z-index:10}@keyframes cursor-blink{0%,46%{opacity:1}47%,100%{opacity:0}}header{padding:32px clamp(18px,5vw,72px) 20px;display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid #0c2112}h1{margin:2px 0 0;font-size:clamp(28px,4vw,48px);font-weight:650;letter-spacing:-.06em;color:#ecfff0;text-shadow:0 0 24px #42ff7240}h1:after{content:"_";display:inline-block;margin-left:.08em;color:var(--accent);animation:cursor-blink 1.05s steps(1,end) infinite;text-shadow:0 0 12px var(--accent)}sup{font-size:.48em;color:var(--accent);letter-spacing:0;vertical-align:super}.eyebrow{color:var(--accent);text-transform:uppercase;letter-spacing:.18em;font-size:11px;font-weight:800}.eyebrow:before{content:"[ "}.eyebrow:after{content:" ]"}.muted{color:var(--muted)}main{padding:24px clamp(18px,5vw,72px) 70px;max-width:1600px;margin:auto}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{position:relative;background:linear-gradient(145deg,rgba(8,16,11,.98),rgba(3,8,5,.98));border:1px solid var(--line);border-radius:3px;padding:20px;box-shadow:inset 0 1px #49ff7110,0 16px 50px #0008}.card:before{content:"";position:absolute;width:8px;height:8px;left:-1px;top:-1px;border-left:1px solid var(--accent);border-top:1px solid var(--accent)}.metric{grid-column:span 3}.metric b{display:block;font-size:23px;margin:8px 0;color:#eaffee;font-weight:600}.apps{grid-column:span 8}.deploy{grid-column:span 4}.events{grid-column:span 12}h2{margin:0 0 16px;font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);font-weight:650}h2:before{content:"> ";color:#297e41}button,.button{border:1px solid var(--line-hot);border-radius:2px;padding:9px 12px;background:#09150d;color:#a9ffbc;cursor:pointer;font:700 12px/1.2 inherit;text-transform:uppercase;letter-spacing:.04em;transition:.15s ease}button.primary{background:var(--accent);border-color:var(--accent);color:#011405;box-shadow:0 0 18px #42ff7228}button.danger{background:#1b080b;border-color:#7d2633;color:#ff8f9d}button:hover{border-color:var(--accent);color:#eaffee;background:#102819;box-shadow:0 0 14px #42ff721b}button.primary:hover{color:#001504;background:#73ff94;filter:none}input,select,textarea{width:100%;background:#020604;border:1px solid var(--line);border-radius:2px;color:var(--text);padding:10px;margin:5px 0 12px;font:13px/1.4 inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px #42ff7214}input::placeholder,textarea::placeholder{color:#416d4a}label{color:#7fc98f;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.app{border-top:1px dashed var(--line);padding:16px 0}.app:first-of-type{border-top:0}.app-head,.actions{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}.pill{padding:3px 8px;border:1px solid #244b2e;border-radius:2px;background:#071009;color:#76a981;font-size:10px;text-transform:uppercase}.pill.running{border-color:#278c42;background:#092212;color:var(--green);box-shadow:inset 0 0 12px #42ff7210}.pill.running:after{content:"\25a0";display:inline-block;margin-left:6px;font-size:7px;animation:cursor-blink 1.35s steps(1,end) infinite}.pill.exited,.pill.missing{border-color:#63303a;color:#ff8291;background:#18080b}pre{white-space:pre-wrap;max-height:280px;overflow:auto;background:#010302;padding:14px;border:1px solid #102a18;border-radius:2px;color:#9ceead}.bar{height:5px;background:#0b1a0f;border:1px solid #17341f;border-radius:0;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);box-shadow:0 0 10px var(--accent)}dialog{background:var(--panel);color:var(--text);border:1px solid var(--line-hot);border-radius:3px;width:min(850px,92vw);box-shadow:0 0 80px #000}dialog::backdrop{background:#000d}@media(prefers-reduced-motion:reduce){h1:after,.pill.running:after{animation:none}}@media(max-width:950px){.metric{grid-column:span 6}.apps,.deploy{grid-column:span 12}}@media(max-width:520px){header{align-items:start;gap:18px}.metric{grid-column:span 12}.row{grid-template-columns:1fr}}
 input,textarea{caret-color:var(--accent);caret-shape:block}input[type=number]{appearance:textfield;-moz-appearance:textfield;padding-right:40px}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.stepper{position:relative}.stepper input{margin-bottom:12px}.step-controls{position:absolute;right:1px;top:6px;bottom:13px;width:31px;display:grid;grid-template-rows:1fr 1fr;border-left:1px solid var(--line)}.step-controls button{min-width:0;padding:0;border:0;border-radius:0;background:#07140b;color:var(--accent);font-size:9px;line-height:1}.step-controls button:first-child{border-bottom:1px solid var(--line)}.step-controls button:hover{background:#12301a;box-shadow:inset 0 0 10px #42ff7222}
 .loading-value{color:var(--accent)!important;letter-spacing:.18em;animation:cursor-blink 1.05s steps(1,end) infinite}.loading-bar{width:14%!important;animation:cursor-blink 1.05s steps(1,end) infinite}@media(prefers-reduced-motion:reduce){.loading-value,.loading-bar{animation:none}}
-</style></head><body><header><div><div class="eyebrow">Personal cloud control plane</div><h1>ShreyWS Launchpad</h1><div class="muted">Control panel for apps running on ShreyWS<sup>TM</sup></div></div><button onclick="loadAll()">Refresh</button></header><main><div id="metrics" class="grid"></div><div class="grid" style="margin-top:16px"><section class="card apps"><h2>Applications</h2><div id="apps">Loading…</div></section><section class="card deploy"><h2>Launch application</h2><form id="form"><label>App name</label><input name="name" placeholder="my-app" required pattern="[a-z][a-z0-9-]{1,38}[a-z0-9]"><label>Source type</label><select name="source_type" id="sourceType"><option value="image">Approved image</option><option value="git">Git repository with Dockerfile</option></select><label>Image or HTTPS repository</label><select name="image" id="image"></select><input name="git" id="git" placeholder="https://github.com/user/repo.git" hidden><div class="row"><div><label>RAM (MiB)</label><input type="number" name="memory_mb" value="256" min="32" max="16384"></div><div><label>CPU cores</label><input type="number" name="cpus" value="0.5" min="0.1" max="4" step="0.1"></div></div><div class="row"><div><label>Persistent storage (GiB)</label><input type="number" name="storage_gb" value="1" min="0" max="500"></div><div><label>Container port</label><input type="number" name="container_port" value="80" min="1" max="65535"></div></div><label>Visibility</label><select name="visibility"><option value="internal">Internal · Tailscale</option><option value="public">Public · requires ingress</option></select><label>Domain/subdomain (optional)</label><input name="domain" placeholder="app.example.com"><label>Fixed internal IP (advanced, optional)</label><input name="ipv4" placeholder="172.30.x.x"><label>Environment · one KEY=value per line</label><textarea name="environment" rows="3"></textarea><label>Secrets · one KEY=value per line</label><textarea name="secrets" rows="3"></textarea><button class="primary" type="submit">Deploy application</button></form><p id="notice" class="muted"></p></section><section class="card events"><h2>Recent activity</h2><div id="events"></div></section></div></main><dialog id="logs"><div class="app-head"><h2 id="logTitle">Logs</h2><button onclick="logs.close()">Close</button></div><pre id="logText"></pre></dialog><script>
+</style></head><body><header><div><div class="eyebrow">Personal cloud control plane</div><h1>ShreyWS Launchpad</h1><div class="muted">Control panel for apps running on ShreyWS<sup>TM</sup></div></div><button onclick="loadAll()">Refresh</button></header><main><div id="metrics" class="grid"></div><div class="grid" style="margin-top:16px"><section class="card apps"><h2>Applications</h2><div id="apps">Loading…</div></section><section class="card deploy"><h2>Launch application</h2><form id="form"><label>App name</label><input name="name" placeholder="my-app" required pattern="[a-z][a-z0-9-]{1,38}[a-z0-9]"><label>Source type</label><select name="source_type" id="sourceType"><option value="image">Approved image</option><option value="git">Git repository with Dockerfile</option></select><label>Image or HTTPS repository</label><select name="image" id="image"></select><input name="git" id="git" placeholder="https://github.com/user/repo.git" hidden><div class="row"><div><label>RAM (MiB)</label><input type="number" name="memory_mb" value="256" min="32" max="16384"></div><div><label>CPU cores</label><input type="number" name="cpus" value="0.5" min="0.1" max="4" step="0.1"></div></div><div class="row"><div><label>Persistent storage (GiB)</label><input type="number" name="storage_gb" value="1" min="0" max="500"></div><div><label>Container port · optional for Git</label><input type="number" name="container_port" value="80" min="1" max="65535" placeholder="Detected from Dockerfile EXPOSE"></div></div><p id="portHint" class="muted">Approved images use their configured port.</p><label>Visibility</label><select name="visibility"><option value="internal">Internal · Tailscale</option><option value="public">Public · requires ingress</option></select><label>Domain/subdomain (optional)</label><input name="domain" placeholder="app.example.com"><label>Fixed internal IP (advanced, optional)</label><input name="ipv4" placeholder="172.30.x.x"><label>Environment · one KEY=value per line</label><textarea name="environment" rows="3"></textarea><label>Secrets · one KEY=value per line</label><textarea name="secrets" rows="3"></textarea><p id="notice" class="muted"></p><button class="primary" type="submit">Build, check & deploy</button></form></section><section class="card events"><h2>Recent activity</h2><div id="events"></div></section></div></main><dialog id="logs"><div class="app-head"><h2 id="logTitle">Logs</h2><button onclick="logs.close()">Close</button></div><pre id="logText"></pre></dialog><script>
 const metricSkeleton=[['Host memory','Reading host memory…'],['Assigned RAM','Reading app limits…'],['Storage','Reading main storage…'],['System load · 1m / 5m / 15m','Reading CPU load…']];metrics.innerHTML=metricSkeleton.map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b class="loading-value">▮</b><div class="muted" style="min-height:21px">${x[1]}</div><div class="bar"><i class="loading-bar"></i></div></section>`).join('');
 const B="''' + BASE + r'''/api"; const fmt=n=>{const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`};
 async function api(path,opt={}){opt.headers={...(opt.headers||{}),'X-Requested-With':'launchpad'};if(opt.body)opt.headers['Content-Type']='application/json';const r=await fetch(B+path,opt);const j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j}
@@ -704,7 +861,8 @@ function externalHtml(items){if(!items.length)return '<h2 style="margin-top:24px
 const ipInput=form.elements.ipv4;ipInput.previousElementSibling.textContent='Fixed container IP (advanced, optional)';ipInput.placeholder='Automatically assigned (recommended)';const ipHint=document.createElement('p');ipHint.className='muted';ipHint.textContent='Private Docker-network address only. Public access is configured with Visibility and Domain.';ipInput.after(ipHint);
 form.elements.visibility.options[0].textContent='Internal · Tailscale only';form.elements.visibility.options[1].textContent='Public · Cloudflare Tunnel';const domainInput=form.elements.domain;const domainHint=document.createElement('p');domainHint.className='muted';domainHint.textContent='Optional. Entering an approved domain automatically selects public tunnel routing; leaving it blank stays Tailscale-only.';domainInput.after(domainHint);domainInput.addEventListener('input',()=>{form.elements.visibility.value=domainInput.value.trim()?'public':'internal'});form.elements.visibility.addEventListener('change',()=>{if(form.elements.visibility.value==='internal'&&domainInput.value.trim())domainInput.value=''});
 const gitPanel=document.createElement('div');gitPanel.id='gitPanel';gitPanel.hidden=true;git.after(gitPanel);gitPanel.innerHTML='<label>Branch</label><input name="git_ref" id="gitRef" value="main" list="gitBranches" placeholder="main"><datalist id="gitBranches"></datalist><div class="actions"><button type="button" onclick="prepareFormKey()">Prepare private-repo key</button><button type="button" onclick="loadFormBranches()">Load branches</button></div><pre id="formKeyOutput" hidden></pre><p class="muted">For a private GitHub repo: prepare the key, add it under Repository settings → Deploy keys without write access, then load branches.</p>';
-async function prepareFormKey(){notice.textContent='Preparing per-app key…';try{const name=form.name.value,source=git.value;const d=await api('/git/key/prepare',{method:'POST',body:JSON.stringify({name,source})});formKeyOutput.hidden=false;formKeyOutput.textContent=d.deploy_key.public_key+'\n\nFingerprint: '+d.deploy_key.fingerprint;notice.textContent='Add this public key to the GitHub repository as a read-only deploy key.'}catch(e){notice.textContent=e.message}}
+function requireGitFields(){const name=form.name.value.trim(),source=git.value.trim();if(!name)throw Error('Enter the app name first.');if(!source)throw Error('Enter the HTTPS GitHub repository URL first.');return {name,source}}
+async function prepareFormKey(){notice.textContent='Preparing per-app key…';formKeyOutput.hidden=true;try{const {name,source}=requireGitFields();const d=await api('/git/key/prepare',{method:'POST',body:JSON.stringify({name,source})});formKeyOutput.hidden=false;formKeyOutput.textContent=d.deploy_key.public_key+'\n\nFingerprint: '+d.deploy_key.fingerprint;notice.textContent='Add this public key to the GitHub repository as a read-only deploy key.'}catch(e){formKeyOutput.hidden=false;formKeyOutput.textContent=e.message;notice.textContent='Private-repository setup needs attention.'}}
 async function loadFormBranches(){notice.textContent='Loading branches…';try{const d=await api('/git/branches',{method:'POST',body:JSON.stringify({name:form.name.value,source:git.value})});gitBranches.innerHTML=d.branches.map(b=>`<option value="${esc(b)}"></option>`).join('');if(d.branches.length&&!d.branches.includes(gitRef.value))gitRef.value=d.branches.includes('main')?'main':d.branches[0];notice.textContent=d.branches.length?`${d.branches.length} branches loaded.`:'No branches found.'}catch(e){notice.textContent=e.message}}
 const gitManager=document.createElement('section');gitManager.className='card';gitManager.style.gridColumn='span 12';gitManager.innerHTML='<h2>Git application control</h2><div id="gitApps"><span class="muted">Loading Git applications…</span></div>';document.querySelector('.events').before(gitManager);
 const gitDialog=document.createElement('dialog');gitDialog.innerHTML='<div class="app-head"><h2 id="gitDialogTitle">Git settings</h2><button onclick="gitDialog.close()">Close</button></div><div id="gitDialogStatus" class="muted"></div><label>Branch</label><select id="existingBranch"></select><div class="actions"><button class="primary" onclick="switchExistingBranch()">Switch & deploy</button><button onclick="checkExistingGit()">Check update</button><button onclick="keyAction(\'rotate\')">Rotate key</button><button class="danger" onclick="keyAction(\'revoke\')">Revoke local key</button></div><pre id="existingKey"></pre><p class="muted">Deploy keys are read-only. Rotating or revoking locally does not remove the old public key from GitHub; remove it in repository settings too.</p>';document.body.append(gitDialog);let selectedGitApp=null;
@@ -714,8 +872,8 @@ async function openGit(name){gitDialogStatus.textContent='Loading branches…';g
 async function switchExistingBranch(){if(!selectedGitApp)return;if(!confirm(`Switch ${selectedGitApp.name} to ${existingBranch.value} and deploy it?`))return;gitDialogStatus.textContent='Switching branch and rebuilding…';try{await api(`/apps/${selectedGitApp.name}/switch-branch`,{method:'POST',body:JSON.stringify({branch:existingBranch.value})});await openGit(selectedGitApp.name);await loadAll();await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
 async function checkExistingGit(){if(!selectedGitApp)return;gitDialogStatus.textContent='Checking remote…';try{await api(`/apps/${selectedGitApp.name}/check-update`,{method:'POST',body:'{}'});await openGit(selectedGitApp.name);await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
 async function keyAction(action){if(!selectedGitApp)return;if(action==='revoke'&&!confirm('Destroy the local private deploy key? Also remove its public key from GitHub.'))return;gitDialogStatus.textContent=action==='rotate'?'Generating replacement key…':'Revoking local key…';try{await api(`/git/key/${action}`,{method:'POST',body:JSON.stringify({name:selectedGitApp.name,source:selectedGitApp.source})});await openGit(selectedGitApp.name)}catch(e){gitDialogStatus.textContent=e.message}}
-async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>form.container_port.value=image.selectedOptions[0].dataset.port;image.onchange()}catch(e){notice.textContent=e.message}}
-sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?8080:image.selectedOptions[0]?.dataset.port||80};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Deploying…';try{const f=new FormData(form),g=f.get('source_type')==='git';await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});notice.textContent='Deployed.';form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
+async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>{if(sourceType.value==='image')form.container_port.value=image.selectedOptions[0].dataset.port};image.onchange()}catch(e){notice.textContent=e.message}}
+sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?'':image.selectedOptions[0]?.dataset.port||80;portHint.textContent=g?'Leave blank to detect the web port from Dockerfile EXPOSE. Launchpad builds and startup-checks the container before replacing anything live.':'Approved images use their configured port.'};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Cloning, building and checking startup…';try{const f=new FormData(form),g=f.get('source_type')==='git';if(g)requireGitFields();const d=await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});const warning=(d.warnings||[]).join(' ');notice.textContent=`Deployed successfully on detected container port ${d.container_port}.${warning?' '+warning:''}`;form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
 async function act(n,a){try{await api(`/apps/${n}/${a}`,{method:'POST'});await loadAll()}catch(e){alert(e.message)}}async function removeApp(n){if(!confirm(`Remove ${n}? Persistent data will be preserved.`))return;try{await api(`/apps/${n}`,{method:'DELETE'});await loadAll()}catch(e){alert(e.message)}}async function showLogs(n){try{const d=await api(`/apps/${n}/logs`);logTitle.textContent=n+' logs';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 async function showExternalLogs(id){try{const d=await api(`/external/${id}/logs`);logTitle.textContent=d.name+' logs (external)';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 const assistant=document.createElement('section');assistant.className='card';assistant.style.gridColumn='span 12';assistant.innerHTML='<div class="app-head"><h2>Codex operator</h2><span id="aiStatus" class="pill">checking…</span></div><pre id="chatOutput">Ask about the server, a deployment, or what to do next. Codex runs read-only and cannot silently mutate Docker.</pre><form id="chatForm"><textarea id="chatInput" rows="3" placeholder="What can I safely deploy with 512 MiB?"></textarea><button class="primary">Ask Codex</button></form>';document.querySelector('.events').before(assistant);
@@ -813,7 +971,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.require_mutation(); path = self.route_path(); actor = self.actor()
             if path == "/api/apps":
-                config = validate_payload(self.body()); deploy(config, actor); self.send_json(201,{"status":"deployed","name":config["name"]}); return
+                config = validate_payload(self.body()); result = deploy(config, actor); self.send_json(201,result); return
             if path == "/api/git/branches":
                 body = self.body(); name = validate_app_name(body.get("name", "")); source = validate_git_source(body.get("source", ""))
                 self.send_json(200, {"branches":list_git_branches(name, source)}); return

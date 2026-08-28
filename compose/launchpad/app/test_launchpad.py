@@ -23,6 +23,9 @@ class ValidationTests(unittest.TestCase):
     def test_ui_has_valid_api_base_literal(self):
         self.assertIn('const B="/launchpad/api";', launchpad.INDEX)
 
+    def test_ui_does_not_overwrite_git_auto_port_during_refresh(self):
+        self.assertIn("if(sourceType.value==='image')form.container_port.value", launchpad.INDEX)
+
     def test_rejects_unapproved_image(self):
         value=self.valid(); value["source"]="evil/image:latest"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
@@ -51,6 +54,47 @@ class ValidationTests(unittest.TestCase):
     def test_accepts_https_git(self):
         value=self.valid(); value.update(source_type="git",source="https://github.com/example/app.git")
         self.assertEqual(launchpad.validate_payload(value)["source_type"],"git")
+
+    def test_git_port_can_be_auto_detected(self):
+        value=self.valid(); value.update(source_type="git",source="https://github.com/example/app.git",container_port="")
+        self.assertEqual(launchpad.validate_payload(value)["container_port"],0)
+
+    def test_resolves_single_exposed_tcp_port(self):
+        config={"container_port":0}
+        with patch.object(launchpad,"docker",return_value='[{"Config":{"ExposedPorts":{"8080/tcp":{}}}}]'):
+            self.assertEqual(launchpad.resolve_container_port(config,"demo"),8080)
+
+    def test_requires_choice_for_multiple_exposed_ports(self):
+        config={"container_port":0}
+        value='[{"Config":{"ExposedPorts":{"8080/tcp":{},"9090/tcp":{}}}}]'
+        with patch.object(launchpad,"docker",return_value=value):
+            with self.assertRaisesRegex(launchpad.LaunchpadError,"multiple TCP ports"):
+                launchpad.resolve_container_port(config,"demo")
+
+    def test_explicit_port_wins_without_inspecting_image(self):
+        with patch.object(launchpad,"docker") as mocked:
+            self.assertEqual(launchpad.resolve_container_port({"container_port":3000},"demo"),3000)
+        mocked.assert_not_called()
+
+    def test_permission_failure_has_rootless_guidance(self):
+        inspected='[{"State":{"Running":false,"ExitCode":1,"Error":""}}]'
+        def fake_docker(args, **kwargs):
+            if args[0] == "inspect": return inspected
+            if args[0] == "logs": return 'chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)'
+            raise AssertionError(args)
+        with patch.object(launchpad,"docker",side_effect=fake_docker):
+            message=launchpad.startup_failure("candidate")
+        self.assertIn("rootless/unprivileged runtime image",message)
+
+    def test_normalizes_private_checkout_file_permissions(self):
+        source=Path(tmp.name)/"permission-test"
+        nested=source/"public"; nested.mkdir(parents=True,exist_ok=True)
+        asset=nested/"portrait.jpg"; asset.write_bytes(b"image"); asset.chmod(0o600)
+        completed=__import__("subprocess").CompletedProcess([],0,stdout=b"public/portrait.jpg\0")
+        with patch.object(launchpad.subprocess,"run",return_value=completed):
+            launchpad.normalize_build_context_permissions(source)
+        self.assertEqual(asset.stat().st_mode & 0o777,0o644)
+        self.assertEqual(nested.stat().st_mode & 0o777,0o755)
 
     def test_accepts_git_branch(self):
         value=self.valid(); value.update(source_type="git",source="https://github.com/example/app.git",git_ref="feature/private-repos")

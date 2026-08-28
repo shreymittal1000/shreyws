@@ -33,6 +33,32 @@ Image deployments are restricted to `APPROVED_IMAGES` in `launchpad.py`. Git
 deployments are owner-trusted code and accept HTTPS repository identifiers on
 GitHub, GitLab or Codeberg. Git repositories must contain a root `Dockerfile`.
 
+## One-pass Git deployments
+
+For a Git application, the container port may be left blank. Launchpad builds
+the image and reads its Docker `EXPOSE` metadata. A single exposed TCP port is
+selected automatically; zero or multiple ports produce an actionable prompt
+before any live container is replaced.
+
+Private checkouts retain a mode-`0700` application root. Before building,
+Launchpad normalizes only Git-tracked build inputs to conventional read-only
+asset permissions inside that private root. This prevents static files from
+becoming unreadable when copied into an unprivileged runtime image.
+
+Every new image receives a three-second startup preflight in an unrouted,
+temporary container with separate temporary data. The normal profile drops all
+Linux capabilities and enables `no-new-privileges`. If startup fails with the
+well-known root-oriented `chown: Operation not permitted` pattern, Launchpad
+retries once with a limited compatibility set (`CHOWN`, `DAC_OVERRIDE`,
+`FOWNER`, `SETGID`, `SETUID`, and `NET_BIND_SERVICE`). It never grants
+privileged mode, host mounts, host networking, or Docker access.
+
+Updates use rollback-safe replacement: the current container remains available
+through build and preflight, is stopped only for cutover, and is restored if
+the replacement fails its final startup check. Failed legacy Docker build
+steps use forced cleanup so temporary builder containers do not appear as
+external applications.
+
 ## Git repositories and deploy keys
 
 Public repositories clone over HTTPS. Private GitHub repositories use a unique
