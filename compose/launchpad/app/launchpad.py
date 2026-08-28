@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import html
+import base64
+import hashlib
 import ipaddress
 import json
 import os
+import pty
 import re
 import shutil
+import socket
 import sqlite3
+import struct
 import subprocess
 import threading
 import time
@@ -33,6 +38,10 @@ GIT_CHECK_INTERVAL = int(os.getenv("LAUNCHPAD_GIT_CHECK_INTERVAL", "900"))
 KNOWN_HOSTS_PATH = DB_PATH.parent / "ssh_known_hosts"
 STARTED = time.time()
 LOCK = threading.RLock()
+TERMINAL_LOCK = threading.Lock()
+TERMINAL_SESSIONS: set[str] = set()
+TERMINAL_SESSION_SECONDS = 30 * 60
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,38}[a-z0-9]$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -844,13 +853,62 @@ def assistant_request(path: str, body: dict[str, object] | None = None) -> dict[
         return json.load(response)
 
 
+def websocket_accept(key: str) -> str:
+    digest = hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def websocket_frame(payload: bytes, opcode: int = 1) -> bytes:
+    length = len(payload)
+    if length < 126:
+        header = bytes((0x80 | opcode, length))
+    elif length <= 65535:
+        header = bytes((0x80 | opcode, 126)) + struct.pack("!H", length)
+    else:
+        header = bytes((0x80 | opcode, 127)) + struct.pack("!Q", length)
+    return header + payload
+
+
+def websocket_read_exact(connection: socket.socket, length: int) -> bytes:
+    value = bytearray()
+    while len(value) < length:
+        chunk = connection.recv(length - len(value))
+        if not chunk:
+            raise ConnectionError("WebSocket closed")
+        value.extend(chunk)
+    return bytes(value)
+
+
+def websocket_receive(connection: socket.socket) -> tuple[int, bytes]:
+    header = websocket_read_exact(connection, 2)
+    opcode = header[0] & 0x0F
+    masked = bool(header[1] & 0x80)
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", websocket_read_exact(connection, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", websocket_read_exact(connection, 8))[0]
+    if not masked:
+        raise LaunchpadError("Browser WebSocket frames must be masked")
+    if length > 8192:
+        raise LaunchpadError("Terminal input frame is too large")
+    mask = websocket_read_exact(connection, 4)
+    payload = websocket_read_exact(connection, length)
+    return opcode, bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+
+
+def terminal_origin_allowed(origin: str) -> bool:
+    parsed = urlparse(origin)
+    return parsed.scheme == "https" and parsed.netloc == INTERNAL_HOST and parsed.path == ""
+
+
 INDEX = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ShreyWS Launchpad</title><style>
 :root{--bg:#020503;--panel:#050a07;--panel2:#08100b;--line:#183a24;--line-hot:#2b6b3d;--text:#d8ffe1;--muted:#6fa87c;--accent:#42ff72;--green:#42ff72;--red:#ff5c70;--amber:#d7ff54}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(rgba(66,255,114,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(66,255,114,.018) 1px,transparent 1px),radial-gradient(circle at 18% -10%,#0b2815 0,transparent 34%),var(--bg);background-size:32px 32px,32px 32px,auto,auto;color:var(--text);font:14px/1.5 "IBM Plex Mono","JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace}body:before{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent 0,transparent 3px,rgba(0,0,0,.08) 4px);z-index:10}@keyframes cursor-blink{0%,46%{opacity:1}47%,100%{opacity:0}}@keyframes button-spin{to{transform:rotate(360deg)}}header{padding:32px clamp(18px,5vw,72px) 20px;display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid #0c2112}h1{margin:2px 0 0;font-size:clamp(28px,4vw,48px);font-weight:650;letter-spacing:-.06em;color:#ecfff0;text-shadow:0 0 24px #42ff7240}h1:after{content:"_";display:inline-block;margin-left:.08em;color:var(--accent);animation:cursor-blink 1.05s steps(1,end) infinite;text-shadow:0 0 12px var(--accent)}sup{font-size:.48em;color:var(--accent);letter-spacing:0;vertical-align:super}.eyebrow{color:var(--accent);text-transform:uppercase;letter-spacing:.18em;font-size:11px;font-weight:800}.eyebrow:before{content:"[ "}.eyebrow:after{content:" ]"}.muted{color:var(--muted)}main{padding:24px clamp(18px,5vw,72px) 70px;max-width:1600px;margin:auto}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.card{position:relative;background:linear-gradient(145deg,rgba(8,16,11,.98),rgba(3,8,5,.98));border:1px solid var(--line);border-radius:3px;padding:20px;box-shadow:inset 0 1px #49ff7110,0 16px 50px #0008}.card:before{content:"";position:absolute;width:8px;height:8px;left:-1px;top:-1px;border-left:1px solid var(--accent);border-top:1px solid var(--accent)}.metric{grid-column:span 3}.metric b{display:block;font-size:23px;margin:8px 0;color:#eaffee;font-weight:600}.apps{grid-column:span 8}.deploy{grid-column:span 4}.events{grid-column:span 12}h2{margin:0 0 16px;font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);font-weight:650}h2:before{content:"> ";color:#297e41}button,.button{border:1px solid var(--line-hot);border-radius:2px;padding:9px 12px;background:#09150d;color:#a9ffbc;cursor:pointer;font:700 12px/1.2 inherit;text-transform:uppercase;letter-spacing:.04em;transition:transform .08s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease,opacity .15s ease}button.primary{background:var(--accent);border-color:var(--accent);color:#011405;box-shadow:0 0 18px #42ff7228}button.danger{background:#1b080b;border-color:#7d2633;color:#ff8f9d}button:hover{border-color:var(--accent);color:#eaffee;background:#102819;box-shadow:0 0 14px #42ff721b}button.primary:hover{color:#001504;background:#73ff94;filter:none}button.ack{transform:translateY(1px) scale(.97);background:#173d21;border-color:var(--accent);box-shadow:inset 0 0 14px #42ff7240}button.busy{cursor:wait;opacity:.78}button.busy:before{content:"";display:inline-block;width:10px;height:10px;margin-right:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:button-spin .7s linear infinite}button:disabled{pointer-events:none}input,select,textarea{width:100%;background:#020604;border:1px solid var(--line);border-radius:2px;color:var(--text);padding:10px;margin:5px 0 12px;font:13px/1.4 inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px #42ff7214}input::placeholder,textarea::placeholder{color:#416d4a}label{color:#7fc98f;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.app{border-top:1px dashed var(--line);padding:16px 0}.app:first-of-type{border-top:0}.app-head,.actions{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}.pill{padding:3px 8px;border:1px solid #244b2e;border-radius:2px;background:#071009;color:#76a981;font-size:10px;text-transform:uppercase}.pill.running{border-color:#278c42;background:#092212;color:var(--green);box-shadow:inset 0 0 12px #42ff7210}.pill.running:after{content:"\25a0";display:inline-block;margin-left:6px;font-size:7px;animation:cursor-blink 1.35s steps(1,end) infinite}.pill.exited,.pill.missing{border-color:#63303a;color:#ff8291;background:#18080b}pre{white-space:pre-wrap;max-height:280px;overflow:auto;background:#010302;padding:14px;border:1px solid #102a18;border-radius:2px;color:#9ceead}.bar{height:5px;background:#0b1a0f;border:1px solid #17341f;border-radius:0;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);box-shadow:0 0 10px var(--accent)}dialog{background:var(--panel);color:var(--text);border:1px solid var(--line-hot);border-radius:3px;width:min(850px,92vw);box-shadow:0 0 80px #000}dialog::backdrop{background:#000d}@media(prefers-reduced-motion:reduce){h1:after,.pill.running:after,button.busy:before{animation:none}button.ack{transform:none}}@media(max-width:950px){.metric{grid-column:span 6}.apps,.deploy{grid-column:span 12}}@media(max-width:520px){header{align-items:start;gap:18px}.metric{grid-column:span 12}.row{grid-template-columns:1fr}}
 input,textarea{caret-color:var(--accent);caret-shape:block}input[type=number]{appearance:textfield;-moz-appearance:textfield;padding-right:40px}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}.stepper{position:relative}.stepper input{margin-bottom:12px}.step-controls{position:absolute;right:1px;top:6px;bottom:13px;width:31px;display:grid;grid-template-rows:1fr 1fr;border-left:1px solid var(--line)}.step-controls button{min-width:0;padding:0;border:0;border-radius:0;background:#07140b;color:var(--accent);font-size:9px;line-height:1}.step-controls button:first-child{border-bottom:1px solid var(--line)}.step-controls button:hover{background:#12301a;box-shadow:inset 0 0 10px #42ff7222}
-.loading-value{color:var(--accent)!important;letter-spacing:.18em;animation:cursor-blink 1.05s steps(1,end) infinite}.loading-bar{width:14%!important;animation:cursor-blink 1.05s steps(1,end) infinite}@media(prefers-reduced-motion:reduce){.loading-value,.loading-bar{animation:none}}
-</style></head><body><header><div><div class="eyebrow">Personal cloud control plane</div><h1>ShreyWS Launchpad</h1><div class="muted">Control panel for apps running on ShreyWS<sup>TM</sup></div></div><button onclick="loadAll()">Refresh</button></header><main><div id="metrics" class="grid"></div><div class="grid" style="margin-top:16px"><section class="card apps"><h2>Applications</h2><div id="apps">Loading…</div></section><section class="card deploy"><h2>Launch application</h2><form id="form"><label>App name</label><input name="name" placeholder="my-app" required pattern="[a-z][a-z0-9-]{1,38}[a-z0-9]"><label>Source type</label><select name="source_type" id="sourceType"><option value="image">Approved image</option><option value="git">Git repository with Dockerfile</option></select><label>Image or HTTPS repository</label><select name="image" id="image"></select><input name="git" id="git" placeholder="https://github.com/user/repo.git" hidden><div class="row"><div><label>RAM (MiB)</label><input type="number" name="memory_mb" value="256" min="32" max="16384"></div><div><label>CPU cores</label><input type="number" name="cpus" value="0.5" min="0.1" max="4" step="0.1"></div></div><div class="row"><div><label>Persistent storage (GiB)</label><input type="number" name="storage_gb" value="1" min="0" max="500"></div><div><label>Container port</label><input type="number" name="container_port" value="80" min="1" max="65535" placeholder="Detected from Dockerfile EXPOSE"></div></div><p id="portHint" class="muted">Approved images use their configured port.</p><label>Visibility</label><select name="visibility"><option value="internal">Internal · Tailscale</option><option value="public">Public · requires ingress</option></select><label>Domain/subdomain (optional)</label><input name="domain" placeholder="app.example.com"><label>Fixed internal IP (advanced, optional)</label><input name="ipv4" placeholder="172.30.x.x"><label>Environment · one KEY=value per line</label><textarea name="environment" rows="3"></textarea><label>Secrets · one KEY=value per line</label><textarea name="secrets" rows="3"></textarea><p id="notice" class="muted"></p><button class="primary" type="submit">Build, check & deploy</button></form></section><section class="card events"><h2>Recent activity</h2><div id="events"></div></section></div></main><dialog id="logs"><div class="app-head"><h2 id="logTitle">Logs</h2><button onclick="logs.close()">Close</button></div><pre id="logText"></pre></dialog><script>
+.loading-value{color:var(--accent)!important;letter-spacing:.18em;animation:cursor-blink 1.05s steps(1,end) infinite}.loading-bar{width:14%!important;animation:cursor-blink 1.05s steps(1,end) infinite}.terminal-output{height:min(58vh,560px);max-height:none;overflow:auto;margin:14px 0;background:#000;color:#baffc9;white-space:pre-wrap;word-break:break-word}.terminal-form{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:start}.terminal-form input{margin:0}.terminal-status{color:var(--muted)}@media(prefers-reduced-motion:reduce){.loading-value,.loading-bar{animation:none}}
+</style></head><body><header><div><div class="eyebrow">Personal cloud control plane</div><h1>ShreyWS Launchpad</h1><div class="muted">Control panel for apps running on ShreyWS<sup>TM</sup></div></div><button onclick="loadAll()">Refresh</button></header><main><div id="metrics" class="grid"></div><div class="grid" style="margin-top:16px"><section class="card apps"><h2>Applications</h2><div id="apps">Loading…</div></section><section class="card deploy"><h2>Launch application</h2><form id="form"><label>App name</label><input name="name" placeholder="my-app" required pattern="[a-z][a-z0-9-]{1,38}[a-z0-9]"><label>Source type</label><select name="source_type" id="sourceType"><option value="image">Approved image</option><option value="git">Git repository with Dockerfile</option></select><label>Image or HTTPS repository</label><select name="image" id="image"></select><input name="git" id="git" placeholder="https://github.com/user/repo.git" hidden><div class="row"><div><label>RAM (MiB)</label><input type="number" name="memory_mb" value="256" min="32" max="16384"></div><div><label>CPU cores</label><input type="number" name="cpus" value="0.5" min="0.1" max="4" step="0.1"></div></div><div class="row"><div><label>Persistent storage (GiB)</label><input type="number" name="storage_gb" value="1" min="0" max="500"></div><div><label>Container port</label><input type="number" name="container_port" value="80" min="1" max="65535" placeholder="Detected from Dockerfile EXPOSE"></div></div><p id="portHint" class="muted">Approved images use their configured port.</p><label>Visibility</label><select name="visibility"><option value="internal">Internal · Tailscale</option><option value="public">Public · requires ingress</option></select><label>Domain/subdomain (optional)</label><input name="domain" placeholder="app.example.com"><label>Fixed internal IP (advanced, optional)</label><input name="ipv4" placeholder="172.30.x.x"><label>Environment · one KEY=value per line</label><textarea name="environment" rows="3"></textarea><label>Secrets · one KEY=value per line</label><textarea name="secrets" rows="3"></textarea><p id="notice" class="muted"></p><button class="primary" type="submit">Build, check & deploy</button></form></section><section class="card events"><h2>Recent activity</h2><div id="events"></div></section></div></main><dialog id="logs"><div class="app-head"><h2 id="logTitle">Logs</h2><button onclick="logs.close()">Close</button></div><pre id="logText"></pre></dialog><dialog id="terminalDialog"><div class="app-head"><h2 id="terminalTitle">Container terminal</h2><button onclick="closeTerminal()">Close</button></div><div id="terminalStatus" class="terminal-status">Disconnected</div><pre id="terminalOutput" class="terminal-output"></pre><form id="terminalForm" class="terminal-form"><input id="terminalInput" autocomplete="off" spellcheck="false" aria-label="Terminal command" placeholder="Enter a shell command"><button class="primary" type="submit">Send</button><button type="button" onclick="interruptTerminal()">Ctrl-C</button></form></dialog><script>
 const metricSkeleton=[['Host memory','Reading host memory…'],['Assigned RAM','Reading app limits…'],['Storage','Reading main storage…'],['System load · 1m / 5m / 15m','Reading CPU load…']];metrics.innerHTML=metricSkeleton.map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b class="loading-value">▮</b><div class="muted" style="min-height:21px">${x[1]}</div><div class="bar"><i class="loading-bar"></i></div></section>`).join('');
 const B="''' + BASE + r'''/api"; const fmt=n=>{const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(i?1:0)} ${u[i]}`};
 let pendingButton=null,pendingButtonTimer=0;function acknowledgeButton(button){if(!button||button.disabled)return;pendingButton=button;button.classList.add('ack');clearTimeout(pendingButtonTimer);pendingButtonTimer=setTimeout(()=>{button.classList.remove('ack');if(pendingButton===button)pendingButton=null},650)}function beginButtonRequest(){const button=pendingButton;pendingButton=null;if(!button)return null;clearTimeout(pendingButtonTimer);button.classList.remove('ack');button.classList.add('busy');button.disabled=true;button.setAttribute('aria-busy','true');return button}function endButtonRequest(button){if(!button)return;button.classList.remove('busy');button.disabled=false;button.removeAttribute('aria-busy')}document.addEventListener('click',event=>{const button=event.target.closest('button');if(button)acknowledgeButton(button)},true);document.addEventListener('submit',event=>{if(event.submitter)acknowledgeButton(event.submitter)},true);
@@ -873,10 +931,11 @@ async function openGit(name){gitDialogStatus.textContent='Loading branches…';g
 async function switchExistingBranch(){if(!selectedGitApp)return;if(!confirm(`Switch ${selectedGitApp.name} to ${existingBranch.value} and deploy it?`))return;gitDialogStatus.textContent='Switching branch and rebuilding…';try{await api(`/apps/${selectedGitApp.name}/switch-branch`,{method:'POST',body:JSON.stringify({branch:existingBranch.value})});await openGit(selectedGitApp.name);await loadAll();await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
 async function checkExistingGit(){if(!selectedGitApp)return;gitDialogStatus.textContent='Checking remote…';try{await api(`/apps/${selectedGitApp.name}/check-update`,{method:'POST',body:'{}'});await openGit(selectedGitApp.name);await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
 async function keyAction(action){if(!selectedGitApp)return;if(action==='revoke'&&!confirm('Destroy the local private deploy key? Also remove its public key from GitHub.'))return;gitDialogStatus.textContent=action==='rotate'?'Generating replacement key…':'Revoking local key…';try{await api(`/git/key/${action}`,{method:'POST',body:JSON.stringify({name:selectedGitApp.name,source:selectedGitApp.source})});await openGit(selectedGitApp.name)}catch(e){gitDialogStatus.textContent=e.message}}
-async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>{if(sourceType.value==='image')form.container_port.value=image.selectedOptions[0].dataset.port};image.onchange()}catch(e){notice.textContent=e.message}}
+async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="openTerminal('${a.name}')" ${a.state==='running'?'':'disabled'}>Terminal</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>{if(sourceType.value==='image')form.container_port.value=image.selectedOptions[0].dataset.port};image.onchange()}catch(e){notice.textContent=e.message}}
 sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?'':image.selectedOptions[0]?.dataset.port||80;portHint.textContent=g?'Leave blank to detect the web port from Dockerfile EXPOSE. Launchpad builds and startup-checks the container before replacing anything live.':'Approved images use their configured port.'};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Cloning, building and checking startup…';try{const f=new FormData(form),g=f.get('source_type')==='git';if(g)requireGitFields();const d=await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});const warning=(d.warnings||[]).join(' ');notice.textContent=`Deployed successfully on detected container port ${d.container_port}.${warning?' '+warning:''}`;form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
 async function act(n,a){try{await api(`/apps/${n}/${a}`,{method:'POST'});await loadAll()}catch(e){alert(e.message)}}async function removeApp(n){if(!confirm(`Remove ${n}? Persistent data will be preserved.`))return;try{await api(`/apps/${n}`,{method:'DELETE'});await loadAll()}catch(e){alert(e.message)}}async function showLogs(n){try{const d=await api(`/apps/${n}/logs`);logTitle.textContent=n+' logs';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 async function showExternalLogs(id){try{const d=await api(`/external/${id}/logs`);logTitle.textContent=d.name+' logs (external)';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
+let terminalSocket=null;function appendTerminal(value){terminalOutput.textContent=(terminalOutput.textContent+value).slice(-120000);terminalOutput.scrollTop=terminalOutput.scrollHeight}function openTerminal(name){closeTerminal(false);terminalTitle.textContent=name+' · terminal';terminalOutput.textContent='Connecting…\n';terminalStatus.textContent='Authenticating owner session…';terminalDialog.showModal();const scheme=location.protocol==='https:'?'wss':'ws';terminalSocket=new WebSocket(`${scheme}://${location.host}${B}/apps/${name}/terminal`);terminalSocket.onopen=()=>{terminalStatus.textContent='Connected · runs as the container configured user';terminalOutput.textContent='';terminalInput.focus()};terminalSocket.onmessage=event=>appendTerminal(event.data);terminalSocket.onerror=()=>{terminalStatus.textContent='Connection failed';appendTerminal('\nTerminal connection failed. Refresh your Authentik session and try again.\n')};terminalSocket.onclose=event=>{terminalStatus.textContent=`Disconnected${event.code&&event.code!==1000?' · code '+event.code:''}`;terminalSocket=null}}function closeTerminal(closeDialog=true){if(terminalSocket){terminalSocket.close(1000,'owner closed terminal');terminalSocket=null}if(closeDialog&&terminalDialog.open)terminalDialog.close()}function interruptTerminal(){if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send('\x03')}terminalForm.onsubmit=event=>{event.preventDefault();const command=terminalInput.value;if(!command||terminalSocket?.readyState!==WebSocket.OPEN)return;appendTerminal(command+'\n');terminalSocket.send(command+'\r');terminalInput.value=''};terminalDialog.addEventListener('cancel',event=>{event.preventDefault();closeTerminal()});
 const assistant=document.createElement('section');assistant.className='card';assistant.style.gridColumn='span 12';assistant.innerHTML='<div class="app-head"><h2>Codex operator</h2><span id="aiStatus" class="pill">checking…</span></div><pre id="chatOutput">Ask about the server, a deployment, or what to do next. Codex runs read-only and cannot silently mutate Docker.</pre><form id="chatForm"><textarea id="chatInput" rows="3" placeholder="What can I safely deploy with 512 MiB?"></textarea><button class="primary">Ask Codex</button></form>';document.querySelector('.events').before(assistant);
 async function loadAssistant(){try{const s=await api('/assistant/status');aiStatus.textContent=s.authenticated?s.version+' · signed in':s.version+' · sign-in required'}catch(e){aiStatus.textContent='assistant unavailable'}}chatForm.onsubmit=async e=>{e.preventDefault();const message=chatInput.value.trim();if(!message)return;chatOutput.textContent='Codex is thinking…';try{const d=await api('/assistant/chat',{method:'POST',body:JSON.stringify({message})});chatOutput.textContent=d.reply}catch(e){chatOutput.textContent=e.message}};document.querySelectorAll('input[type=number]').forEach(input=>{const wrap=document.createElement('div');wrap.className='stepper';input.before(wrap);wrap.append(input);const controls=document.createElement('span');controls.className='step-controls';for(const [label,dir] of [['▲',1],['▼',-1]]){const button=document.createElement('button');button.type='button';button.textContent=label;button.tabIndex=-1;button.setAttribute('aria-label',dir>0?'Increase':'Decrease');button.onclick=()=>{dir>0?input.stepUp():input.stepDown();input.dispatchEvent(new Event('input',{bubbles:true}))};controls.append(button)}wrap.append(controls)});sourceType.onchange();loadAll();loadGitApps();loadAssistant();setInterval(loadAll,15000);setInterval(loadGitApps,60000);setInterval(loadAssistant,60000);
 </script></body></html>'''
@@ -915,6 +974,139 @@ class Handler(BaseHTTPRequestHandler):
         if OWNER_GROUP not in groups:
             raise LaunchpadError("Owner role required")
 
+    def require_terminal(self) -> None:
+        groups = {item.strip() for item in self.headers.get("X-authentik-groups", "").split("|") if item.strip()}
+        if OWNER_GROUP not in groups:
+            raise LaunchpadError("Owner role required")
+        if not terminal_origin_allowed(self.headers.get("Origin", "")):
+            raise LaunchpadError("Terminal WebSocket origin is not allowed")
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            raise LaunchpadError("WebSocket upgrade required")
+        if "upgrade" not in self.headers.get("Connection", "").lower():
+            raise LaunchpadError("Invalid WebSocket connection header")
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        try:
+            decoded = base64.b64decode(key, validate=True)
+        except Exception as exc:
+            raise LaunchpadError("Invalid WebSocket key") from exc
+        if len(decoded) != 16:
+            raise LaunchpadError("Invalid WebSocket key")
+
+    def terminal_send(self, payload: bytes, lock: threading.Lock, opcode: int = 1) -> None:
+        with lock:
+            self.connection.sendall(websocket_frame(payload, opcode))
+
+    def handle_terminal(self, name: str) -> None:
+        self.require_terminal()
+        name = validate_app_name(name)
+        load_config(name)
+        container = APP_PREFIX + name
+        if not container_exists(name):
+            raise LaunchpadError("Application container is missing")
+        details = json.loads(docker(["inspect", container], timeout=20))[0]
+        labels = details.get("Config", {}).get("Labels") or {}
+        if labels.get(APP_LABEL) != name:
+            raise LaunchpadError("Terminal access is limited to Launchpad-managed applications")
+        if not details.get("State", {}).get("Running"):
+            raise LaunchpadError("Start the application before opening a terminal")
+        with TERMINAL_LOCK:
+            if name in TERMINAL_SESSIONS:
+                raise LaunchpadError("A terminal session is already active for this application")
+            TERMINAL_SESSIONS.add(name)
+
+        actor = self.actor()
+        key = self.headers["Sec-WebSocket-Key"]
+        try:
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", websocket_accept(key))
+            self.end_headers()
+        except Exception:
+            with TERMINAL_LOCK:
+                TERMINAL_SESSIONS.discard(name)
+            raise
+
+        audit(actor, name, "terminal-open", "success")
+        master_fd = -1
+        slave_fd = -1
+        process: subprocess.Popen[bytes] | None = None
+        send_lock = threading.Lock()
+        stop = threading.Event()
+        try:
+            master_fd, slave_fd = pty.openpty()
+            process = subprocess.Popen(
+                ["docker", "exec", "-it", "-e", "TERM=dumb", container, "/bin/sh"],
+                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+
+            def relay_output() -> None:
+                try:
+                    while not stop.is_set():
+                        chunk = os.read(master_fd, 4096)
+                        if not chunk:
+                            break
+                        self.terminal_send(chunk.decode("utf-8", "replace").encode(), send_lock, 1)
+                except (ConnectionError, OSError):
+                    pass
+                finally:
+                    stop.set()
+
+            threading.Thread(target=relay_output, name=f"terminal-{name}", daemon=True).start()
+            self.terminal_send(
+                f"Connected to {container} as its configured user. Session limit: 30 minutes.\r\n".encode(),
+                send_lock,
+            )
+            self.connection.settimeout(1)
+            deadline = time.monotonic() + TERMINAL_SESSION_SECONDS
+            while not stop.is_set() and time.monotonic() < deadline:
+                try:
+                    opcode, payload = websocket_receive(self.connection)
+                except socket.timeout:
+                    continue
+                if opcode == 8:
+                    break
+                if opcode == 9:
+                    self.terminal_send(payload, send_lock, 10)
+                    continue
+                if opcode not in {1, 2}:
+                    continue
+                os.write(master_fd, payload)
+            if time.monotonic() >= deadline:
+                self.terminal_send(b"\r\nSession expired after 30 minutes.\r\n", send_lock)
+        except Exception as exc:
+            try:
+                self.terminal_send(f"\r\nTerminal error: {exc}\r\n".encode(), send_lock)
+            except Exception:
+                pass
+        finally:
+            stop.set()
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if master_fd >= 0:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+            if slave_fd >= 0:
+                try:
+                    os.close(slave_fd)
+                except OSError:
+                    pass
+            with TERMINAL_LOCK:
+                TERMINAL_SESSIONS.discard(name)
+            audit(actor, name, "terminal-close", "success")
+            try:
+                self.terminal_send(b"", send_lock, 8)
+            except Exception:
+                pass
+
     def body(self) -> dict[str, object]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -946,6 +1138,9 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as conn:
                     items = [{**dict(row), "update":read_git_status(str(row["name"]))} for row in conn.execute("SELECT name,source,git_ref FROM apps WHERE source_type='git' ORDER BY name")]
                 self.send_json(200, {"apps":items}); return
+            match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/terminal", path)
+            if match:
+                self.handle_terminal(match.group(1)); return
             match = re.fullmatch(r"/api/apps/([a-z0-9-]+)/git", path)
             if match:
                 self.send_json(200, git_details(match.group(1))); return

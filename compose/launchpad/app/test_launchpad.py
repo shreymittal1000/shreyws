@@ -32,6 +32,25 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("button.setAttribute('aria-busy','true')", launchpad.INDEX)
         self.assertIn("finally{endButtonRequest(button)}", launchpad.INDEX)
 
+    def test_ui_has_managed_container_terminal(self):
+        self.assertIn("openTerminal('${a.name}')", launchpad.INDEX)
+        self.assertIn("new WebSocket", launchpad.INDEX)
+        self.assertIn("terminalSocket.send(command+'\\r')", launchpad.INDEX)
+
+    def test_websocket_accept_matches_rfc_example(self):
+        self.assertEqual(
+            launchpad.websocket_accept("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        )
+
+    def test_server_websocket_frame_is_unmasked(self):
+        self.assertEqual(launchpad.websocket_frame(b"hello"),b"\x81\x05hello")
+
+    def test_terminal_origin_is_exact_internal_host(self):
+        self.assertTrue(launchpad.terminal_origin_allowed("https://shreyws.tail1591fa.ts.net"))
+        self.assertFalse(launchpad.terminal_origin_allowed("https://evil.example"))
+        self.assertFalse(launchpad.terminal_origin_allowed("http://shreyws.tail1591fa.ts.net"))
+
     def test_rejects_unapproved_image(self):
         value=self.valid(); value["source"]="evil/image:latest"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)

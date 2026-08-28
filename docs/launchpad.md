@@ -119,6 +119,23 @@ capacity planning. Bind-mounted directories on the host filesystem do not have
 independent hard quotas. Launchpad reports assigned versus physical capacity;
 filesystem/project quota enforcement is a later storage phase.
 
+## Managed container terminal
+
+Running Launchpad-managed applications expose an owner-only **Terminal** action.
+It opens a same-origin WebSocket through the existing Authentik-protected
+Launchpad route and attaches a pseudo-terminal to `/bin/sh` with `docker exec`.
+The shell runs as the user configured by the application image; Launchpad does
+not elevate it to host root or add mounts, capabilities, networking, or Docker
+access.
+
+Terminal access is deliberately unavailable for platform and externally
+managed containers. The backend verifies the exact Origin, the Authentik owner
+group, the Launchpad database record, the live container ownership label, and
+running state before upgrading the connection. Only one terminal may be open
+per application, sessions expire after 30 minutes, input frames are limited to
+8 KiB, and open/close events are audited without recording commands or output.
+Closing the dialog terminates the associated `docker exec` process.
+
 ## Assistant integration
 
 The Codex operator runs in a separate container with no Docker socket and a
