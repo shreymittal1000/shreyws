@@ -26,6 +26,12 @@ class ValidationTests(unittest.TestCase):
     def test_ui_does_not_overwrite_git_auto_port_during_refresh(self):
         self.assertIn("if(sourceType.value==='image')form.container_port.value", launchpad.INDEX)
 
+    def test_ui_has_immediate_and_pending_button_feedback(self):
+        self.assertIn("button.classList.add('ack')", launchpad.INDEX)
+        self.assertIn("button.classList.add('busy')", launchpad.INDEX)
+        self.assertIn("button.setAttribute('aria-busy','true')", launchpad.INDEX)
+        self.assertIn("finally{endButtonRequest(button)}", launchpad.INDEX)
+
     def test_rejects_unapproved_image(self):
         value=self.valid(); value["source"]="evil/image:latest"
         with self.assertRaises(launchpad.LaunchpadError): launchpad.validate_payload(value)
