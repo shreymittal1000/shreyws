@@ -16,6 +16,7 @@ import socket
 import sqlite3
 import struct
 import subprocess
+import termios
 import threading
 import time
 from http import HTTPStatus
@@ -1057,8 +1058,11 @@ class Handler(BaseHTTPRequestHandler):
         stop = threading.Event()
         try:
             master_fd, slave_fd = pty.openpty()
+            terminal_settings = termios.tcgetattr(slave_fd)
+            terminal_settings[3] &= ~termios.ECHO
+            termios.tcsetattr(slave_fd, termios.TCSANOW, terminal_settings)
             process = subprocess.Popen(
-                ["docker", "exec", "-it", "-e", "TERM=dumb", container, "/bin/sh"],
+                ["docker", "exec", "-i", "-e", "TERM=dumb", container, "/bin/sh", "-i"],
                 stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True,
             )
             os.close(slave_fd)
@@ -1095,7 +1099,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if opcode not in {1, 2}:
                     continue
-                os.write(master_fd, payload)
+                os.write(master_fd, payload.replace(b"\r", b"\n"))
             if time.monotonic() >= deadline:
                 self.terminal_send(b"\r\nSession expired after 30 minutes.\r\n", send_lock)
         except Exception as exc:

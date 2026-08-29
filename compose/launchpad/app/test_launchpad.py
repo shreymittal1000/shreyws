@@ -64,6 +64,13 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("new WebSocket", launchpad.INDEX)
         self.assertIn("terminalSocket.send(command+'\\r')", launchpad.INDEX)
 
+    def test_terminal_avoids_nested_tty_and_duplicate_echo(self):
+        source=__import__("inspect").getsource(launchpad.Handler.handle_terminal)
+        self.assertIn('["docker", "exec", "-i",',source)
+        self.assertNotIn('"-it"',source)
+        self.assertIn("~termios.ECHO",source)
+        self.assertIn('payload.replace(b"\\r", b"\\n")',source)
+
     def test_websocket_handler_uses_http_11(self):
         self.assertEqual(launchpad.Handler.protocol_version,"HTTP/1.1")
 
