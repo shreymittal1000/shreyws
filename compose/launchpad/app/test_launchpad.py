@@ -64,6 +64,9 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("new WebSocket", launchpad.INDEX)
         self.assertIn("terminalSocket.send(command+'\\r')", launchpad.INDEX)
 
+    def test_websocket_handler_uses_http_11(self):
+        self.assertEqual(launchpad.Handler.protocol_version,"HTTP/1.1")
+
     def test_websocket_accept_matches_rfc_example(self):
         self.assertEqual(
             launchpad.websocket_accept("dGhlIHNhbXBsZSBub25jZQ=="),

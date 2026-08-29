@@ -964,6 +964,7 @@ async function loadAssistant(){try{const s=await api('/assistant/status');aiStat
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "ShreyWSLaunchpad/0.1"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f'level=info component=launchpad client="{self.client_address[0]}" message="{fmt % args}"', flush=True)
