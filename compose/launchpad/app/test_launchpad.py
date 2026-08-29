@@ -47,6 +47,12 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("Set up Hermes",launchpad.INDEX)
         self.assertIn("hermes setup && hermes gateway start",launchpad.INDEX)
 
+    def test_image_defaults_do_not_overwrite_user_resource_edits(self):
+        self.assertIn("if(selected===configuredImage)return",launchpad.INDEX)
+        self.assertIn("const selectedImage=image.value",launchpad.INDEX)
+        self.assertIn("image.value=selectedImage",launchpad.INDEX)
+        self.assertIn("form.container_port.value=selectedPort",launchpad.INDEX)
+
     def test_ui_has_valid_api_base_literal(self):
         self.assertIn('const B="/launchpad/api";', launchpad.INDEX)
 
