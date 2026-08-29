@@ -136,6 +136,27 @@ per application, sessions expire after 30 minutes, input frames are limited to
 8 KiB, and open/close events are audited without recording commands or output.
 Closing the dialog terminates the associated `docker exec` process.
 
+## Hermes Agent preset
+
+The approved `nousresearch/hermes-agent:v2026.8.27` preset is an
+owner-trusted, setup-ready Hermes workspace. Launchpad mounts its persistent
+application data at `/opt/data`, assigns 4 GiB RAM, 2 CPUs, 25 GiB of storage,
+a 1 GiB shared-memory segment for Chromium, and routes container port 8642.
+It also enables the API server on the container network and generates its API
+key as an application secret.
+
+A new container initially runs `sleep infinity` so it stays available before
+Hermes has credentials. After deployment, **Set up Hermes** opens the managed
+terminal and runs `hermes setup && hermes gateway start`. The official s6
+supervisor then owns the gateway lifecycle. Updating or recreating the
+container preserves configuration, sessions, skills, and memories under
+`/opt/data`.
+
+The preset does not mount the host Docker socket or host filesystem. Packages
+installed into the container's immutable filesystem are not guaranteed across
+an image update; durable additions should use a derived image, while Hermes
+state and user-managed tools belong under `/opt/data`.
+
 ## Assistant integration
 
 The Codex operator runs in a separate container with no Docker socket and a

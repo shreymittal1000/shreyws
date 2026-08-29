@@ -20,6 +20,33 @@ class ValidationTests(unittest.TestCase):
     def test_valid_image(self):
         self.assertEqual(launchpad.validate_payload(self.valid())["name"], "demo-app")
 
+    def test_hermes_preset_has_safe_runtime_defaults(self):
+        value=self.valid(); value.update(source="nousresearch/hermes-agent:v2026.8.27",container_port="",memory_mb=4096,cpus=2,storage_gb=25)
+        config=launchpad.validate_payload(value)
+        self.assertEqual(config["container_port"],8642)
+        self.assertEqual(config["environment"]["API_SERVER_HOST"],"0.0.0.0")
+        self.assertGreaterEqual(len(config["secrets"]["API_SERVER_KEY"]),32)
+
+    def test_hermes_runtime_mount_command_and_browser_shm(self):
+        value=self.valid(); value.update(source="nousresearch/hermes-agent:v2026.8.27",container_port=8642,memory_mb=4096,cpus=2,storage_gb=25)
+        config=launchpad.validate_payload(value)
+        calls=[]
+        def fake_docker(args, **kwargs):
+            calls.append(args)
+            if args[0]=="network" and args[1]=="ls": return "launchpad_app_demo-app\n"
+            if args[:2]==["inspect","--format"]: return '{}'
+            return ""
+        with patch.object(launchpad,"docker",side_effect=fake_docker):
+            launchpad.create_container(config,str(config["source"]),routed=False)
+        create=next(args for args in calls if args[0]=="create")
+        self.assertIn("type=bind,src="+str(launchpad.app_dir("demo-app")/"data")+",dst=/opt/data",create)
+        self.assertEqual(create[-3:],["nousresearch/hermes-agent:v2026.8.27","sleep","infinity"])
+        self.assertEqual(create[create.index("--shm-size")+1],"1g")
+
+    def test_ui_offers_hermes_setup_without_ssh(self):
+        self.assertIn("Set up Hermes",launchpad.INDEX)
+        self.assertIn("hermes setup && hermes gateway start",launchpad.INDEX)
+
     def test_ui_has_valid_api_base_literal(self):
         self.assertIn('const B="/launchpad/api";', launchpad.INDEX)
 

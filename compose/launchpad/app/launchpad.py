@@ -58,6 +58,17 @@ APPROVED_IMAGES = {
     "python:3.13.5-alpine3.22": {"label": "Python 3.13", "port": 8000, "read_only": False},
     "node:24.5.0-alpine3.22": {"label": "Node.js 24", "port": 3000, "read_only": False},
     "postgres:16.14-alpine": {"label": "PostgreSQL 16", "port": 5432, "read_only": False, "capabilities": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]},
+    "nousresearch/hermes-agent:v2026.8.27": {
+        "label": "Hermes Agent 2026.8.27", "port": 8642, "read_only": False,
+        "data_target": "/opt/data", "command": ["sleep", "infinity"],
+        "setup_command": "hermes setup && hermes gateway start", "setup_label": "Set up Hermes",
+        "memory_mb": 4096, "cpus": 2, "storage_gb": 25,
+        "shm_size": "1g", "pids_limit": 512,
+        "capabilities": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"],
+        "environment": {"API_SERVER_ENABLED": "true", "API_SERVER_HOST": "0.0.0.0"},
+        "generated_secrets": ["API_SERVER_KEY"],
+        "description": "Persistent Hermes workspace. Deploy, then use Set up Hermes once.",
+    },
 }
 
 COMPATIBILITY_CAPABILITIES = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID", "NET_BIND_SERVICE"]
@@ -247,11 +258,16 @@ def validate_payload(raw: dict[str, object]) -> dict[str, object]:
                 raise LaunchpadError(f"Value for {key} is too large or invalid")
             target[str(key)] = text
 
+    policy = APPROVED_IMAGES.get(source, {}) if source_type == "image" else {}
+    env = {**policy.get("environment", {}), **env}
+    for key in policy.get("generated_secrets", []):
+        secrets.setdefault(str(key), __import__("secrets").token_hex(32))
+
     return {
         "name": name, "source_type": source_type, "source": source, "git_ref": git_ref,
-        "memory_mb": parse_memory_mb(raw.get("memory_mb", 256)),
-        "cpus": parse_cpus(raw.get("cpus", 0.5)),
-        "storage_gb": parse_storage(raw.get("storage_gb", 1)),
+        "memory_mb": parse_memory_mb(raw.get("memory_mb", policy.get("memory_mb", 256))),
+        "cpus": parse_cpus(raw.get("cpus", policy.get("cpus", 0.5))),
+        "storage_gb": parse_storage(raw.get("storage_gb", policy.get("storage_gb", 1))),
         "visibility": visibility, "domain": domain, "container_port": port, "ipv4": ipv4,
         "environment": env, "secrets": secrets,
     }
@@ -590,19 +606,21 @@ def create_container(
     network = ensure_network(name)
     data = data_path or app_dir(name) / "data"
     data.mkdir(parents=True, exist_ok=True)
+    image_policy = APPROVED_IMAGES.get(str(config["source"]), {}) if config["source_type"] == "image" else {}
     args = [
         "create", "--name", container, "--restart", restart,
         "--memory", f"{config['memory_mb']}m", "--cpus", str(config["cpus"]),
-        "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+        "--pids-limit", str(image_policy.get("pids_limit", 256)), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
         "--network", network,
         "--env-file", str(app_dir(name) / "runtime.env"),
-        "--mount", f"type=bind,src={data},dst=/data",
+        "--mount", f"type=bind,src={data},dst={image_policy.get('data_target', '/data')}",
     ]
+    if image_policy.get("shm_size"):
+        args.extend(["--shm-size", str(image_policy["shm_size"])])
     # A fixed address may still belong to the live container during an update;
     # the unrouted preflight should always use an automatically assigned IP.
     if config["ipv4"] and routed:
         args.extend(["--ip", str(config["ipv4"])])
-    image_policy = APPROVED_IMAGES.get(str(config["source"]), {}) if config["source_type"] == "image" else {}
     capabilities = list(image_policy.get("capabilities", []))
     if config.get("runtime_profile") == "compatibility":
         capabilities.extend(COMPATIBILITY_CAPABILITIES)
@@ -611,7 +629,7 @@ def create_container(
     labels = route_labels(config, network) if routed else ["shreyws.workload=launchpad-preflight", "traefik.enable=false"]
     for label in labels:
         args.extend(["--label", label])
-    args.extend([image])
+    args.extend([image, *[str(value) for value in image_policy.get("command", [])]])
     docker(args)
     docker(["start", container])
 
@@ -763,11 +781,13 @@ def app_rows() -> list[dict[str, object]]:
     for row in rows:
         name = str(row["name"])
         state = states.get(name, {})
+        policy = APPROVED_IMAGES.get(str(row["source"]), {}) if row["source_type"] == "image" else {}
         result.append({
             **row, "env_json": None, "state": state.get("State", "missing"),
             "status": state.get("Status", "container missing"), "stats": stats.get(name, {}),
             "url": f"https://{row['domain']}" if row["domain"] else f"https://{INTERNAL_HOST}/apps/{name}/",
             "git_status": read_git_status(name) if row["source_type"] == "git" else None,
+            "setup_command": policy.get("setup_command", ""), "setup_label": policy.get("setup_label", ""),
         })
     return result
 
@@ -932,7 +952,8 @@ async function switchExistingBranch(){if(!selectedGitApp)return;if(!confirm(`Swi
 async function checkExistingGit(){if(!selectedGitApp)return;gitDialogStatus.textContent='Checking remote…';try{await api(`/apps/${selectedGitApp.name}/check-update`,{method:'POST',body:'{}'});await openGit(selectedGitApp.name);await loadGitApps()}catch(e){gitDialogStatus.textContent=e.message}}
 async function keyAction(action){if(!selectedGitApp)return;if(action==='revoke'&&!confirm('Destroy the local private deploy key? Also remove its public key from GitHub.'))return;gitDialogStatus.textContent=action==='rotate'?'Generating replacement key…':'Revoking local key…';try{await api(`/git/key/${action}`,{method:'POST',body:JSON.stringify({name:selectedGitApp.name,source:selectedGitApp.source})});await openGit(selectedGitApp.name)}catch(e){gitDialogStatus.textContent=e.message}}
 async function loadAll(){try{const d=await api('/overview');const m=d.system.memory,st=d.system.storage,c=d.system.cpu_count,l=+d.system.load[0];metrics.innerHTML=[['Host memory',fmt(m.used)+' / '+fmt(m.total),m.used/m.total,'Available memory included'],['Assigned RAM',d.system.assigned_memory_mb+' MiB',d.system.assigned_memory_mb/(m.total/1048576),'Limits assigned to Launchpad apps'],['Storage',fmt(st.used)+' / '+fmt(st.total),st.used/st.total,'Used on main application storage'],['System load · 1m / 5m / 15m',d.system.load.join(' · '),Math.min(1,l/c),`${loadState(l,c)} · ${c} CPU cores available`]].map(x=>`<section class="card metric"><span class="muted">${x[0]}</span><b>${x[1]}</b><div class="muted" style="min-height:21px">${x[3]}</div><div class="bar"><i style="width:${Math.round(x[2]*100)}%"></i></div></section>`).join('');const managed=d.apps.length?d.apps.map(a=>`<div class="app"><div class="app-head"><div><b>${esc(a.name)}</b> <span class="pill ${esc(a.state)}">${esc(a.state)}</span><div class="muted">${esc(a.source)} · ${a.memory_mb} MiB · ${a.cpus} CPU · ${esc(a.stats.memory||'—')}</div><a href="${esc(a.url)}" target="_blank" class="muted">${esc(a.url)}</a></div><div class="actions"><button onclick="act('${a.name}','start')">Start</button><button onclick="act('${a.name}','stop')">Stop</button><button onclick="act('${a.name}','restart')">Restart</button><button onclick="act('${a.name}','update')">Update</button><button onclick="openTerminal('${a.name}')" ${a.state==='running'?'':'disabled'}>Terminal</button><button onclick="showLogs('${a.name}')">Logs</button><button class="danger" onclick="removeApp('${a.name}')">Remove</button></div></div></div>`).join(''):'<p class="muted">No Launchpad-managed applications yet.</p>';apps.innerHTML=managed+externalHtml(d.external_apps||[]);events.innerHTML=d.events.map(e=>`<span class="pill">${new Date(e.created_at*1000).toLocaleString()} · ${esc(e.actor)} · ${esc(e.app||'platform')} · ${esc(e.action)}: ${esc(e.outcome)}</span>`).join(' ');image.innerHTML=d.approved_images.map(i=>`<option value="${esc(i.image)}" data-port="${i.port}">${esc(i.label)} · ${esc(i.image)}</option>`).join('');image.onchange=()=>{if(sourceType.value==='image')form.container_port.value=image.selectedOptions[0].dataset.port};image.onchange()}catch(e){notice.textContent=e.message}}
-sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?'':image.selectedOptions[0]?.dataset.port||80;portHint.textContent=g?'Leave blank to detect the web port from Dockerfile EXPOSE. Launchpad builds and startup-checks the container before replacing anything live.':'Approved images use their configured port.'};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Cloning, building and checking startup…';try{const f=new FormData(form),g=f.get('source_type')==='git';if(g)requireGitFields();const d=await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});const warning=(d.warnings||[]).join(' ');notice.textContent=`Deployed successfully on detected container port ${d.container_port}.${warning?' '+warning:''}`;form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
+const HERMES_IMAGE='nousresearch/hermes-agent:v2026.8.27';const baseLoadAll=loadAll;loadAll=async function(){await baseLoadAll();for(const card of apps.querySelectorAll('.app')){if(!card.textContent.includes(HERMES_IMAGE))continue;const actions=card.querySelector('.actions'),name=card.querySelector('b')?.textContent;if(!actions||!name||actions.querySelector('.hermes-setup'))continue;const button=document.createElement('button');button.className='primary hermes-setup';button.textContent='Set up Hermes';button.onclick=()=>setupHermes(name);const terminal=[...actions.querySelectorAll('button')].find(item=>item.textContent==='Terminal');actions.insertBefore(button,terminal||null)}};function configureImageDefaults(){if(sourceType.value!=='image'||image.value!==HERMES_IMAGE)return;form.memory_mb.value=4096;form.cpus.value=2;form.storage_gb.value=25;form.container_port.value=8642;portHint.textContent='Persistent Hermes workspace. Deploy it, then click Set up Hermes once.'}image.addEventListener('change',configureImageDefaults);function setupHermes(name){openTerminal(name);const deadline=Date.now()+10000,timer=setInterval(()=>{if(terminalSocket?.readyState===WebSocket.OPEN){clearInterval(timer);const command='hermes setup && hermes gateway start';appendTerminal('$ '+command+'\n');terminalSocket.send(command+'\r')}else if(Date.now()>deadline)clearInterval(timer)},100)}
+sourceType.onchange=()=>{const g=sourceType.value==='git';git.hidden=!g;gitPanel.hidden=!g;image.hidden=g;form.container_port.value=g?'':image.selectedOptions[0]?.dataset.port||80;portHint.textContent=g?'Leave blank to detect the web port from Dockerfile EXPOSE. Launchpad builds and startup-checks the container before replacing anything live.':'Approved images use their configured port.';configureImageDefaults()};form.onsubmit=async e=>{e.preventDefault();notice.textContent='Cloning, building and checking startup…';try{const f=new FormData(form),g=f.get('source_type')==='git';if(g)requireGitFields();const d=await api('/apps',{method:'POST',body:JSON.stringify({name:f.get('name'),source_type:f.get('source_type'),source:g?f.get('git'):f.get('image'),git_ref:g?f.get('git_ref'):'main',memory_mb:f.get('memory_mb'),cpus:f.get('cpus'),storage_gb:f.get('storage_gb'),visibility:f.get('visibility'),domain:f.get('domain'),ipv4:f.get('ipv4'),container_port:f.get('container_port'),environment:pairs(f.get('environment')),secrets:pairs(f.get('secrets'))})});const warning=(d.warnings||[]).join(' ');notice.textContent=`Deployed successfully on detected container port ${d.container_port}.${warning?' '+warning:''}`;form.reset();sourceType.onchange();await loadAll();await loadGitApps()}catch(e){notice.textContent=e.message}};
 async function act(n,a){try{await api(`/apps/${n}/${a}`,{method:'POST'});await loadAll()}catch(e){alert(e.message)}}async function removeApp(n){if(!confirm(`Remove ${n}? Persistent data will be preserved.`))return;try{await api(`/apps/${n}`,{method:'DELETE'});await loadAll()}catch(e){alert(e.message)}}async function showLogs(n){try{const d=await api(`/apps/${n}/logs`);logTitle.textContent=n+' logs';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 async function showExternalLogs(id){try{const d=await api(`/external/${id}/logs`);logTitle.textContent=d.name+' logs (external)';logText.textContent=d.logs||'No logs';logs.showModal()}catch(e){alert(e.message)}}
 let terminalSocket=null;function appendTerminal(value){terminalOutput.textContent=(terminalOutput.textContent+value).slice(-120000);terminalOutput.scrollTop=terminalOutput.scrollHeight}function openTerminal(name){closeTerminal(false);terminalTitle.textContent=name+' · terminal';terminalOutput.textContent='Connecting…\n';terminalStatus.textContent='Authenticating owner session…';terminalDialog.showModal();const scheme=location.protocol==='https:'?'wss':'ws';terminalSocket=new WebSocket(`${scheme}://${location.host}${B}/apps/${name}/terminal`);terminalSocket.onopen=()=>{terminalStatus.textContent='Connected · runs as the container configured user';terminalOutput.textContent='';terminalInput.focus()};terminalSocket.onmessage=event=>appendTerminal(event.data);terminalSocket.onerror=()=>{terminalStatus.textContent='Connection failed';appendTerminal('\nTerminal connection failed. Refresh your Authentik session and try again.\n')};terminalSocket.onclose=event=>{terminalStatus.textContent=`Disconnected${event.code&&event.code!==1000?' · code '+event.code:''}`;terminalSocket=null}}function closeTerminal(closeDialog=true){if(terminalSocket){terminalSocket.close(1000,'owner closed terminal');terminalSocket=null}if(closeDialog&&terminalDialog.open)terminalDialog.close()}function interruptTerminal(){if(terminalSocket?.readyState===WebSocket.OPEN)terminalSocket.send('\x03')}terminalForm.onsubmit=event=>{event.preventDefault();const command=terminalInput.value;if(!command||terminalSocket?.readyState!==WebSocket.OPEN)return;appendTerminal(command+'\n');terminalSocket.send(command+'\r');terminalInput.value=''};terminalDialog.addEventListener('cancel',event=>{event.preventDefault();closeTerminal()});
