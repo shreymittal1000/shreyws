@@ -72,6 +72,12 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("terminalEmulator.onData",launchpad.INDEX)
         self.assertIn("terminalEmulator.onResize",launchpad.INDEX)
 
+    def test_ui_shows_copyable_host_shell_command(self):
+        self.assertIn("Copy shell command", launchpad.INDEX)
+        self.assertIn("docker exec -it -u hermes shreyws-app-${a.name} /bin/bash", launchpad.INDEX)
+        self.assertIn("docker exec -it shreyws-app-${a.name} /bin/sh", launchpad.INDEX)
+        self.assertIn("navigator.clipboard.writeText(command)", launchpad.INDEX)
+
     def test_terminal_allocates_real_tty_and_supports_resize(self):
         source=__import__("inspect").getsource(launchpad.Handler.handle_terminal)
         self.assertIn('["docker", "exec", "-it",',source)
