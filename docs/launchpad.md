@@ -128,6 +128,11 @@ The shell runs as the user configured by the application image; Launchpad does
 not elevate it to host root or add mounts, capabilities, networking, or Docker
 access.
 
+The browser terminal uses locally bundled xterm.js assets and a real
+`xterm-256color` Docker PTY. ANSI applications, curses menus, arrow keys,
+password prompts, and live resize events therefore behave like a normal
+terminal; no third-party CDN is contacted by the browser.
+
 Terminal access is deliberately unavailable for platform and externally
 managed containers. The backend verifies the exact Origin, the Authentik owner
 group, the Launchpad database record, the live container ownership label, and

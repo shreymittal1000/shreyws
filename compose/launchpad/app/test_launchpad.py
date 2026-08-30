@@ -68,14 +68,23 @@ class ValidationTests(unittest.TestCase):
     def test_ui_has_managed_container_terminal(self):
         self.assertIn("openTerminal('${a.name}')", launchpad.INDEX)
         self.assertIn("new WebSocket", launchpad.INDEX)
-        self.assertIn("terminalSocket.send(command+'\\r')", launchpad.INDEX)
+        self.assertIn("new window.XtermTerminal",launchpad.INDEX)
+        self.assertIn("terminalEmulator.onData",launchpad.INDEX)
+        self.assertIn("terminalEmulator.onResize",launchpad.INDEX)
 
-    def test_terminal_avoids_nested_tty_and_duplicate_echo(self):
+    def test_terminal_allocates_real_tty_and_supports_resize(self):
         source=__import__("inspect").getsource(launchpad.Handler.handle_terminal)
-        self.assertIn('["docker", "exec", "-i",',source)
-        self.assertNotIn('"-it"',source)
+        self.assertIn('["docker", "exec", "-it",',source)
+        self.assertIn('"TERM=xterm-256color"',source)
         self.assertIn("~termios.ECHO",source)
-        self.assertIn('payload.replace(b"\\r", b"\\n")',source)
+        self.assertIn('payload.startswith(b"\\0resize:")',source)
+        self.assertIn("termios.TIOCSWINSZ",source)
+
+    def test_terminal_assets_are_local_and_csp_allows_them(self):
+        self.assertIn('/assets/xterm.css',launchpad.INDEX)
+        self.assertIn("import{Terminal}from'./assets/xterm.mjs'",launchpad.INDEX)
+        source=__import__("inspect").getsource(launchpad.Handler.send_html)
+        self.assertIn("script-src 'self' 'unsafe-inline'",source)
 
     def test_websocket_handler_uses_http_11(self):
         self.assertEqual(launchpad.Handler.protocol_version,"HTTP/1.1")
